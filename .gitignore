@@ -1,0 +1,10 @@
+# Python server ignores
+__pycache__/
+*.pyc
+.venv/
+.env
+.idea/
+.vscode/
+.trae/
+.claude/
+docs
