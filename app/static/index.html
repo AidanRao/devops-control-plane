@@ -103,92 +103,10 @@
           </div>
         </div>
 
-        <div class="grid gap-4 md:grid-cols-3">
-          <section
-            class="summary-card rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm backdrop-blur-sm dark:border-slate-700/80 dark:bg-slate-900/80"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
-                  在线 Agent
-                </p>
-                <p
-                  id="summaryOnlineCount"
-                  class="mt-2 text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-50"
-                >
-                  0
-                </p>
-              </div>
-              <span
-                class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-200"
-              >
-                <span class="material-symbols-outlined">important_devices</span>
-              </span>
-            </div>
-            <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
-              自动同步在线设备状态。
-            </p>
-          </section>
-
-          <section
-            class="summary-card rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm backdrop-blur-sm dark:border-slate-700/80 dark:bg-slate-900/80"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
-                  最近任务
-                </p>
-                <p
-                  id="summaryTaskState"
-                  class="mt-2 text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50"
-                >
-                  等待查询
-                </p>
-              </div>
-              <span
-                class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 dark:bg-violet-500/10 dark:text-violet-200"
-              >
-                <span class="material-symbols-outlined">insights</span>
-              </span>
-            </div>
-            <p
-              id="summaryTaskHint"
-              class="mt-3 text-xs text-slate-500 dark:text-slate-400"
-            >
-              下发命令后可直接查询执行结果。
-            </p>
-          </section>
-
-          <section
-            class="summary-card rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm backdrop-blur-sm dark:border-slate-700/80 dark:bg-slate-900/80"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
-                  操作焦点
-                </p>
-                <p
-                  id="summaryFocus"
-                  class="mt-2 text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50"
-                >
-                  命令下发
-                </p>
-              </div>
-              <span
-                class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-200"
-              >
-                <span class="material-symbols-outlined">terminal</span>
-              </span>
-            </div>
-            <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
-              当前页面以操作与结果为主。
-            </p>
-          </section>
-        </div>
       </header>
 
       <main class="mx-auto max-w-6xl space-y-6 pb-8">
-        <section class="grid gap-6 lg:grid-cols-3">
+        <section class="grid gap-6 lg:grid-cols-5">
           <!-- 左侧：在线 Agent + 命令下发 -->
           <div class="space-y-6 lg:col-span-2">
             <!-- 在线 Agent 列表 -->
@@ -236,8 +154,7 @@
                     >
                       <tr>
                         <th class="px-4 py-2">设备 ID</th>
-                        <th class="px-4 py-2">DeviceToken</th>
-                        <th class="px-4 py-2">最近心跳</th>
+                        <th class="px-4 py-2 text-right">最近心跳</th>
                       </tr>
                     </thead>
                     <tbody id="agentsTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
@@ -328,8 +245,8 @@
             </section>
           </div>
 
-          <!-- 右侧：任务查询 + 状态图表 + 日志占位 -->
-          <div class="space-y-6">
+          <!-- 右侧：任务查询 + 状态图表 + 命令输出 -->
+          <div class="space-y-6 lg:col-span-3">
             <!-- 任务查询 & 状态图表 -->
             <section
               class="rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-700/80 dark:bg-slate-900/80"
@@ -362,10 +279,10 @@
                       id="taskIdInput"
                       type="text"
                       class="w-full rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-sm text-slate-800 shadow-sm outline-none ring-0 transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:focus:border-violet-500 dark:focus:ring-violet-500/30"
-                      placeholder="通过上方命令下发获得"
+                      placeholder="下发命令后会自动填充"
                     />
                   </div>
-                  <div class="pt-5 sm:pt-7">
+                  <div class="flex items-center gap-2 pt-5 sm:pt-7">
                     <button
                       id="queryTaskBtn"
                       type="button"
@@ -376,61 +293,64 @@
                       >
                         search
                       </span>
-                      查询任务
+                      查询
+                    </button>
+                    <button
+                      id="autoFollowBtn"
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-slate-500"
+                      title="自动轮询查询结果"
+                    >
+                      <span
+                        class="material-symbols-outlined text-sm"
+                        id="autoFollowIcon"
+                      >
+                        pause_circle
+                      </span>
+                      <span id="autoFollowLabel">停止跟随</span>
                     </button>
                   </div>
                 </div>
 
-                <div
-                  id="taskStatusText"
-                  class="text-xs text-slate-500 dark:text-slate-400"
-                ></div>
-
-                <div class="mt-2 h-48 w-full" id="statusChart"></div>
-
-                <div class="mt-3 max-h-56 overflow-auto rounded-xl border border-slate-100 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/60">
-                  <table class="min-w-full text-left text-xs">
-                    <thead
-                      class="bg-slate-100/80 text-[0.7rem] font-medium uppercase tracking-wide text-slate-500 dark:bg-slate-900/80 dark:text-slate-400"
-                    >
-                      <tr>
-                        <th class="px-3 py-2">Agent</th>
-                        <th class="px-3 py-2">状态</th>
-                        <th class="px-3 py-2">退出码</th>
-                        <th class="px-3 py-2">stdout</th>
-                        <th class="px-3 py-2">stderr</th>
-                      </tr>
-                    </thead>
-                    <tbody
-                      id="taskResultsBody"
-                      class="divide-y divide-slate-100 dark:divide-slate-800"
-                    ></tbody>
-                  </table>
+                <div class="flex items-center justify-between gap-3">
+                  <div
+                    id="taskStatusText"
+                    class="text-xs text-slate-500 dark:text-slate-400"
+                  ></div>
+                  <div
+                    id="taskMetaText"
+                    class="text-[0.7rem] text-slate-400 dark:text-slate-500"
+                  ></div>
                 </div>
-              </div>
-            </section>
 
-            <!-- 实时分片日志占位 -->
-            <section
-              class="rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur-sm dark:border-slate-700/80 dark:bg-slate-900/80"
-            >
-              <div class="mb-3 flex items-center gap-2">
-                <span class="material-symbols-outlined text-lg text-amber-500">
-                  monitoring
-                </span>
-                <h2 class="text-base font-semibold">实时分片日志</h2>
-              </div>
-              <p class="text-xs text-slate-500 dark:text-slate-400">
-                该区域预留给实时日志能力，当前建议在服务端或命令行中查看。
-              </p>
-              <div
-                class="panel-muted mt-3 rounded-xl border border-dashed border-amber-300/70 bg-amber-50/60 px-3 py-2 text-[0.7rem] text-amber-800 dark:border-amber-500/60 dark:bg-amber-500/10 dark:text-amber-100"
-              >
-                <div class="mb-1 flex items-center gap-1.5">
-                  <span class="badge-dot bg-amber-500"></span>
-                  <span class="font-semibold">占位说明</span>
+                <div class="mt-2 h-40 w-full" id="statusChart"></div>
+
+                <div class="terminal-output mt-3 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 shadow-inner dark:border-slate-700">
+                  <div
+                    class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-1.5 text-[0.7rem] text-slate-400"
+                  >
+                    <div class="flex items-center gap-1.5">
+                      <span class="h-2.5 w-2.5 rounded-full bg-rose-500/80"></span>
+                      <span class="h-2.5 w-2.5 rounded-full bg-amber-400/80"></span>
+                      <span class="h-2.5 w-2.5 rounded-full bg-emerald-500/80"></span>
+                      <span class="ml-2 font-medium text-slate-300">
+                        命令输出
+                      </span>
+                    </div>
+                    <span id="terminalAgentCount">0 agent</span>
+                  </div>
+                  <div
+                    id="terminalOutput"
+                    class="max-h-[32rem] min-h-[14rem] overflow-auto p-4 font-mono text-[0.78rem] leading-relaxed"
+                  >
+                    <div class="terminal-empty text-slate-500">
+                      等待命令下发或手动查询任务…
+                    </div>
+                  </div>
                 </div>
-                <p>后续可在这里接入浏览器侧实时日志展示。</p>
+
+                <!-- 兼容旧逻辑：隐藏占位，保留节点以免 JS 报错 -->
+                <tbody id="taskResultsBody" class="hidden"></tbody>
               </div>
             </section>
           </div>

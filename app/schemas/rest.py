@@ -32,9 +32,9 @@ class CommandResultSummary(BaseModel):
 class CommandStatusResponse(BaseModel):
     task_uuid: str
     status: str
-    results: Dict[str, CommandResultSummary] = Field(
-        default_factory=dict,
-        description="按 agent_id 聚合的执行结果。",
+    results: List[CommandResultSummary] = Field(
+        default_factory=list,
+        description="按 agent 聚合的执行结果列表。",
     )
 
 

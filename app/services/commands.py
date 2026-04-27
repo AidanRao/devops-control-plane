@@ -41,7 +41,7 @@ def get_command_status(task_uuid: str):  # -> CommandStatusResponse | None
     return CommandStatusResponse(
         task_uuid=task_uuid,
         status=cmd.get("status", "Pending"),
-        results=results,
+        results=list(results.values()),
     )
 
 
