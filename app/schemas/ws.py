@@ -81,6 +81,7 @@ class CommandPushPayload(BaseModel):
     command: str
     correlationId: str
     timeoutSeconds: int = 30
+    workDir: Optional[str] = None
 
 
 class ResultChunkPayload(BaseModel):

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,11 @@ class CreateCommandRequest(BaseModel):
         description="目标 Agent ID 列表；为空时表示广播到所有在线 Agent。",
     )
     command: str = Field(..., description="要执行的命令文本，例如 'uname -a'。")
+    workDir: Optional[str] = Field(
+        default=None,
+        description="本次命令执行的工作目录；为空时使用 Agent 侧默认（shell.workDir 或进程当前目录）。",
+        max_length=1024,
+    )
     timeoutSeconds: int = Field(30, description="命令最大执行时间（秒）。")
     idempotencyKey: Optional[str] = Field(
         default=None,

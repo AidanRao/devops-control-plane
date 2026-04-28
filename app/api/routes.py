@@ -39,6 +39,7 @@ async def create_command_endpoint(body: CreateCommandRequest) -> CreateCommandRe
         command=body.command,
         correlationId=str(uuid.uuid4()),
         timeoutSeconds=body.timeoutSeconds,
+        workDir=body.workDir,
     )
 
     # 广播给所有在线 Agent。

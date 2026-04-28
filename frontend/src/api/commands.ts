@@ -16,6 +16,7 @@ export interface CommandStatusResponse {
 
 export interface DispatchCommandPayload {
   command: string
+  workDir?: string
   timeoutSeconds?: number
   targets?: string[]
   idempotencyKey?: string
