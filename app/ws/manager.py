@@ -4,7 +4,7 @@ from typing import Dict, Optional
 
 from fastapi import WebSocket
 
-from ..schemas.ws import CommandPushPayload
+from ..schemas.ws import CommandPushPayload, MetricsSnapshot
 
 
 @dataclass
@@ -18,6 +18,7 @@ class DeviceMeta:
     """连接的运行时元信息，例如心跳时间。"""
 
     last_heartbeat: Optional[datetime] = None
+    last_metrics: Optional[MetricsSnapshot] = None
 
 
 class ConnectionManager:
@@ -88,18 +89,24 @@ class ConnectionManager:
 
     # ---- 心跳与在线信息 ----
 
-    def update_heartbeat(self, device_id: str) -> None:
-        """记录设备最近一次心跳时间。"""
+    def update_heartbeat(self, device_id: str, metrics: Optional[MetricsSnapshot] = None) -> None:
+        """记录设备最近一次心跳时间与资源快照。"""
 
         meta = self.meta.get(device_id)
         if meta is None:
             meta = DeviceMeta()
             self.meta[device_id] = meta
         meta.last_heartbeat = datetime.utcnow()
+        if metrics is not None:
+            meta.last_metrics = metrics
 
     def get_last_heartbeat(self, device_id: str) -> Optional[datetime]:
         meta = self.meta.get(device_id)
         return meta.last_heartbeat if meta else None
+
+    def get_last_metrics(self, device_id: str) -> Optional[MetricsSnapshot]:
+        meta = self.meta.get(device_id)
+        return meta.last_metrics if meta else None
 
 
 manager = ConnectionManager()

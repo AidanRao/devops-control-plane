@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { fetchAgents, type AgentInfo } from '@/api/agents'
+import { fetchAgents, updateAgentRemark, type AgentInfo } from '@/api/agents'
 
 export const useAgentStore = defineStore('agents', () => {
   const agents = ref<AgentInfo[]>([])
@@ -46,6 +46,18 @@ export const useAgentStore = defineStore('agents', () => {
     selected.value = new Set()
   }
 
+  async function updateRemark(id: string, remark: string) {
+    const result = await updateAgentRemark(id, remark)
+    agents.value = agents.value.map((item) =>
+      item.device_id === id
+        ? {
+            ...item,
+            remark: result.remark ?? null,
+          }
+        : item,
+    )
+  }
+
   return {
     agents,
     selected,
@@ -54,6 +66,7 @@ export const useAgentStore = defineStore('agents', () => {
     allSelected,
     indeterminate,
     refresh,
+    updateRemark,
     toggle,
     toggleAll,
     clearSelection,

@@ -4,6 +4,11 @@ export interface AgentInfo {
   device_id: string
   hasDeviceToken: boolean
   lastHeartbeat?: string | null
+  remark?: string | null
+  cpuPercent?: number | null
+  memPercent?: number | null
+  memUsed?: number | null
+  memTotal?: number | null
 }
 
 export interface AgentsResponse {
@@ -25,9 +30,29 @@ export interface AgentCommandHistoryResponse {
   items: AgentCommandHistoryItem[]
 }
 
+export interface UpdateAgentRemarkRequest {
+  remark: string
+}
+
+export interface UpdateAgentRemarkResponse {
+  device_id: string
+  remark?: string | null
+}
+
 export async function fetchAgents(): Promise<AgentInfo[]> {
   const { data } = await http.get<AgentsResponse>('/api/agents')
   return data?.agents ?? []
+}
+
+export async function updateAgentRemark(
+  deviceId: string,
+  remark: string,
+): Promise<UpdateAgentRemarkResponse> {
+  const { data } = await http.put<UpdateAgentRemarkResponse>(
+    `/api/agents/${encodeURIComponent(deviceId)}/remark`,
+    { remark } satisfies UpdateAgentRemarkRequest,
+  )
+  return data
 }
 
 export async function fetchAgentCommands(

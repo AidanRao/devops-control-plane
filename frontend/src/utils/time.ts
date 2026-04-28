@@ -2,9 +2,23 @@
  * 把 ISO 时间字符串格式化为相对时间（例如「5s 前」、「2m 前」）。
  * 兼容后端返回的 UTC ISO 字符串与空值。
  */
+function parseServerTime(iso?: string | null): number {
+  if (!iso) return Number.NaN
+
+  const value = iso.trim()
+  if (!value) return Number.NaN
+
+  // 后端当前返回的是 UTC 时间，但很多字段没有显式带上时区后缀。
+  // 浏览器会把没有 Z / ±hh:mm 的时间串当“本地时间”解析，导致偏移。
+  // 这里统一把“无时区信息”的时间按 UTC 解释。
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+  const normalized = hasTimezone ? value : `${value}Z`
+  return new Date(normalized).getTime()
+}
+
 export function formatRelative(iso?: string | null): string {
   if (!iso) return '—'
-  const t = new Date(iso).getTime()
+  const t = parseServerTime(iso)
   if (Number.isNaN(t)) return '—'
   const diffMs = Date.now() - t
   if (diffMs < 0) return '刚刚'
@@ -22,7 +36,7 @@ export function formatRelative(iso?: string | null): string {
 /** 返回心跳时间对应的在线颜色级别：green=近期活跃，yellow=稍有延迟，red=长时间未见 */
 export function heartbeatLevel(iso?: string | null): 'green' | 'yellow' | 'red' {
   if (!iso) return 'red'
-  const t = new Date(iso).getTime()
+  const t = parseServerTime(iso)
   if (Number.isNaN(t)) return 'red'
   const diffMs = Date.now() - t
   if (diffMs < 30_000) return 'green'

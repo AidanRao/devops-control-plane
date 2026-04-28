@@ -7,12 +7,15 @@ from ..schemas.rest import (
     CommandStatusResponse,
     CreateCommandRequest,
     CreateCommandResponse,
+    UpdateAgentRemarkRequest,
+    UpdateAgentRemarkResponse,
 )
 from ..services.commands import (
     create_command,
     get_command_status,
     list_commands_for_agent,
 )
+from ..services.agent_remarks import get_agent_remark, set_agent_remark
 from ..ws.manager import manager
 from ..schemas.ws import CommandPushPayload
 
@@ -60,15 +63,32 @@ async def list_agents() -> AgentsResponse:
 
     agents = []
     for device_id in manager.active_connections.keys():
+        metrics = manager.get_last_metrics(device_id)
         agents.append(
             AgentInfo(
                 device_id=device_id,
                 hasDeviceToken=manager.has_valid_token(device_id),
                 lastHeartbeat=manager.get_last_heartbeat(device_id),
+                cpuPercent=metrics.cpuPercent if metrics else None,
+                memPercent=metrics.memPercent if metrics else None,
+                memUsed=metrics.memUsed if metrics else None,
+                memTotal=metrics.memTotal if metrics else None,
+                remark=get_agent_remark(device_id),
             )
         )
 
     return AgentsResponse(agents=agents)
+
+
+@router.put("/agents/{device_id}/remark", response_model=UpdateAgentRemarkResponse)
+async def update_agent_remark(
+    device_id: str, body: UpdateAgentRemarkRequest
+) -> UpdateAgentRemarkResponse:
+    """更新某个 Agent 的备注（持久化到本地 JSON 文件）。"""
+
+    saved = set_agent_remark(device_id, body.remark)
+    return UpdateAgentRemarkResponse(device_id=device_id, remark=saved)
+
 
 
 @router.get(

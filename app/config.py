@@ -21,5 +21,8 @@ class Settings:
     # 允许的签名时间偏移窗口（秒），防止重放与时钟漂移导致的误判。
     MAX_SKEW_SECONDS: int = int(os.getenv("MAX_SKEW_SECONDS", "300"))
 
+    # Agent 备注存储路径（JSON 文件），用于简单持久化，避免引入 DB 依赖。
+    AGENT_REMARKS_PATH: str = os.getenv("AGENT_REMARKS_PATH", "app/data/agent_remarks.json")
+
 
 settings = Settings()

@@ -9,9 +9,11 @@ import {
   ElTag,
   ElEmpty,
   ElTooltip,
+  ElInput,
+  ElMessage,
   type CheckboxValueType,
 } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { Check, Close, EditPen, Refresh } from '@element-plus/icons-vue'
 import { useAgentStore } from '@/stores/agents'
 import { formatRelative, heartbeatLevel } from '@/utils/time'
 import type { AgentInfo } from '@/api/agents'
@@ -22,6 +24,10 @@ const { agents, selected, loading, selectedCount, allSelected, indeterminate } =
 // 触发相对时间每秒刷新（不发请求，仅让模板重渲染）
 const tick = ref(0)
 let timer: number | undefined
+
+const editingId = ref<string | null>(null)
+const remarkDraft = ref('')
+const savingId = ref<string | null>(null)
 
 async function refresh() {
   await store.refresh()
@@ -52,6 +58,51 @@ function onRowToggle(row: AgentInfo, checked: CheckboxValueType) {
 
 function onToggleAll(checked: CheckboxValueType) {
   store.toggleAll(Boolean(checked))
+}
+
+function normalizedRemark(value?: string | null) {
+  return (value ?? '').trim()
+}
+
+function displayRemark(value?: string | null, max = 18) {
+  const text = normalizedRemark(value)
+  if (!text) return '-'
+  if (text.length <= max) return text
+  return text.slice(0, max - 1) + '…'
+}
+
+function startEditRemark(row: AgentInfo) {
+  if (savingId.value) return
+  editingId.value = row.device_id
+  remarkDraft.value = normalizedRemark(row.remark)
+}
+
+function cancelEditRemark() {
+  if (savingId.value) return
+  editingId.value = null
+  remarkDraft.value = ''
+}
+
+async function saveRemark(row: AgentInfo) {
+  if (savingId.value) return
+  const value = normalizedRemark(remarkDraft.value)
+  if (value.length > 100) {
+    ElMessage.warning('备注最多 100 字')
+    return
+  }
+
+  savingId.value = row.device_id
+  try {
+    await store.updateRemark(row.device_id, value)
+    editingId.value = null
+    remarkDraft.value = ''
+    ElMessage.success('备注已保存')
+  } catch (e) {
+    // Keep editor open so user can retry.
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    savingId.value = null
+  }
 }
 
 function tokenTooltip(row: AgentInfo) {
@@ -101,6 +152,9 @@ function formatHeartbeat(iso?: string | null) {
       :row-class-name="rowClassName"
       empty-text=" "
     >
+      <template #empty>
+        <el-empty v-if="!loading" description="暂无在线 Agent" :image-size="64" />
+      </template>
       <el-table-column width="56" align="center">
         <template #header>
           <el-checkbox
@@ -144,9 +198,55 @@ function formatHeartbeat(iso?: string | null) {
           </el-tag>
         </template>
       </el-table-column>
-    </el-table>
 
-    <el-empty v-if="!loading && agents.length === 0" description="暂无在线 Agent" :image-size="64" />
+      <el-table-column label="备注" min-width="220">
+        <template #default="{ row }: { row: AgentInfo }">
+          <div class="remark-cell">
+            <template v-if="editingId === row.device_id">
+              <el-input
+                v-model="remarkDraft"
+                size="small"
+                maxlength="100"
+                clearable
+                placeholder="添加备注（最多 100 字）"
+                class="remark-input"
+                :disabled="savingId === row.device_id"
+                @keyup.enter="saveRemark(row)"
+                @keyup.esc="cancelEditRemark"
+              />
+              <el-button
+                size="small"
+                type="primary"
+                :icon="Check"
+                :loading="savingId === row.device_id"
+                @click="saveRemark(row)"
+              />
+              <el-button size="small" :icon="Close" :disabled="savingId === row.device_id" @click="cancelEditRemark" />
+            </template>
+
+            <template v-else>
+              <el-tooltip
+                v-if="normalizedRemark(row.remark)"
+                :content="normalizedRemark(row.remark)"
+                placement="top"
+                :disabled="normalizedRemark(row.remark).length <= 18"
+              >
+                <span class="remark-text" :class="normalizedRemark(row.remark) ? '' : 'remark-text--empty'">
+                  {{ displayRemark(row.remark) }}
+                </span>
+              </el-tooltip>
+              <span
+                v-else
+                class="remark-text remark-text--empty"
+              >
+                -
+              </span>
+              <el-button size="small" text :icon="EditPen" @click="startEditRemark(row)">编辑</el-button>
+            </template>
+          </div>
+        </template>
+      </el-table-column>
+    </el-table>
   </div>
 </template>
 
@@ -214,5 +314,28 @@ function formatHeartbeat(iso?: string | null) {
 /* 选中行：浅蓝色高亮 */
 .agent-table :deep(.agent-row-selected td.el-table__cell) {
   background: #eff6ff !important;
+}
+
+.remark-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.remark-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #334155;
+}
+.remark-text--empty {
+  color: #94a3b8;
+}
+.remark-input {
+  flex: 1;
+  min-width: 0;
 }
 </style>

@@ -13,6 +13,11 @@ const props = defineProps<{
   deviceId: string
   /** 可选：初始提示横幅 */
   banner?: string
+  /** 可选：agent 侧上报的实时指标（来自心跳聚合） */
+  cpuPercent?: number | null
+  memPercent?: number | null
+  memUsed?: number | null
+  memTotal?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -65,6 +70,24 @@ function pushBanner() {
 }
 pushBanner()
 
+function formatPercent(value?: number | null) {
+  if (value === undefined || value === null || Number.isNaN(value)) return '—'
+  return `${value.toFixed(1)}%`
+}
+
+function formatBytes(value?: number | null) {
+  if (value === undefined || value === null || Number.isNaN(value)) return '—'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let n = value
+  let idx = 0
+  while (n >= 1024 && idx < units.length - 1) {
+    n /= 1024
+    idx++
+  }
+  const digits = idx <= 1 ? 0 : idx === 2 ? 1 : 2
+  return `${n.toFixed(digits)} ${units[idx]}`
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (bodyEl.value) bodyEl.value.scrollTop = bodyEl.value.scrollHeight
@@ -108,8 +131,32 @@ function splitLines(text: string): string[] {
   return arr
 }
 
+function clearTerminalViewport() {
+  lines.value = []
+  currentCommandLineIndex = null
+}
+
+function normalizeTerminalChunk(chunk: string): string {
+  if (!chunk) return ''
+
+  let text = chunk
+
+  // 处理 clear 常见输出：ESC[3J ESC[H ESC[2J
+  // 这些序列的语义是清屏/清滚动区/光标回到左上角，这里近似为清空当前可见终端内容。
+  if (/\x1b\[(?:3J|2J|H)/.test(text)) {
+    clearTerminalViewport()
+    text = text.replace(/\x1b\[(?:3J|2J|H)/g, '')
+  }
+
+  // 兜底去掉其他 ANSI CSI 控制序列，避免原样渲染为乱码。
+  text = text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+
+  return text
+}
+
 function appendChunk(kind: 'stdout' | 'stderr', chunk: string) {
-  for (const l of splitLines(chunk)) {
+  const normalized = normalizeTerminalChunk(chunk)
+  for (const l of splitLines(normalized)) {
     lines.value.push({ kind, text: l })
   }
   // 一旦有输出到达，关闭 dispatching 指示
@@ -371,6 +418,20 @@ defineExpose({
         <span class="chrome-host">agent@{{ deviceId }}</span>
         <span v-if="running" class="chrome-tag chrome-tag--live">● live</span>
       </span>
+      <div class="chrome-right">
+        <span class="metric-pill" title="CPU usage">
+          <span class="metric-key">CPU</span>
+          <span class="metric-val">{{ formatPercent(cpuPercent) }}</span>
+        </span>
+        <span
+          class="metric-pill"
+          :title="memUsed != null && memTotal != null ? `${formatBytes(memUsed)} / ${formatBytes(memTotal)}` : 'Memory usage'"
+        >
+          <span class="metric-key">MEM</span>
+          <span class="metric-val">{{ formatPercent(memPercent) }}</span>
+          <span class="metric-sub">{{ formatBytes(memUsed) }}/{{ formatBytes(memTotal) }}</span>
+        </span>
+      </div>
     </div>
 
     <div ref="bodyEl" class="terminal-body">
@@ -518,6 +579,42 @@ defineExpose({
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+.chrome-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.metric-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.35);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.metric-key {
+  color: rgba(148, 163, 184, 0.9);
+  letter-spacing: 1px;
+}
+
+.metric-val {
+  color: #e2e8f0;
+}
+
+.metric-sub {
+  color: rgba(148, 163, 184, 0.85);
+  font-size: 10px;
 }
 
 /* 终端正文 */

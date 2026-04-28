@@ -13,6 +13,7 @@ from ..schemas.ws import (
     ChallengePayload,
     ConnectParams,
     EventFrame,
+    HeartbeatPayload,
     HelloAuth,
     HelloOkPayload,
     HelloPolicy,
@@ -192,8 +193,11 @@ async def _handle_incoming_event(device_id: str, data: Any) -> None:
 
     if event == "agent.tick":
         # 更新内存中的最后心跳时间，供 /api/agents 查询展示。
-        print(f"agent.tick: {payload}")
-        manager.update_heartbeat(device_id)
+        try:
+            hb = HeartbeatPayload.model_validate(payload)
+            manager.update_heartbeat(device_id, hb.metrics)
+        except Exception:
+            manager.update_heartbeat(device_id)
         return
 
     if event == "result.chunk":

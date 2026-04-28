@@ -106,6 +106,18 @@ class ResultAckPayload(BaseModel):
     receivedAt: int
 
 
+class MetricsSnapshot(BaseModel):
+    """Agent 所在节点的资源快照，嵌入在心跳中上报。"""
+
+    cpuPercent: float
+    memPercent: float
+    memUsed: int
+    memTotal: int
+    load1: float
+    numGoroutine: int
+
+
 class HeartbeatPayload(BaseModel):
     deviceId: str
     ts: int
+    metrics: Optional[MetricsSnapshot] = None

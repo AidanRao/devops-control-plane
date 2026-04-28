@@ -68,6 +68,11 @@ class AgentInfo(BaseModel):
         default=None,
         description="最近一次接收到的心跳时间（UTC）。",
     )
+    cpuPercent: Optional[float] = Field(default=None, description="CPU 使用率百分比。")
+    memPercent: Optional[float] = Field(default=None, description="内存使用率百分比。")
+    memUsed: Optional[int] = Field(default=None, description="已用内存（bytes）。")
+    memTotal: Optional[int] = Field(default=None, description="总内存（bytes）。")
+    remark: Optional[str] = Field(default=None, description="Agent 备注。")
 
 
 class AgentsResponse(BaseModel):
@@ -75,3 +80,16 @@ class AgentsResponse(BaseModel):
         default_factory=list,
         description="当前在线 Agent 列表。",
     )
+
+
+class UpdateAgentRemarkRequest(BaseModel):
+    remark: str = Field(
+        default="",
+        max_length=100,
+        description="Agent 备注（<=100 字）。空字符串表示清空。",
+    )
+
+
+class UpdateAgentRemarkResponse(BaseModel):
+    device_id: str
+    remark: Optional[str] = None
