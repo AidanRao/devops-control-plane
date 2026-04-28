@@ -35,8 +35,10 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 @app.get("/ui", include_in_schema=False)
-async def ui() -> FileResponse:
-    """服务管理前端页面入口。"""
+@app.get("/ui/", include_in_schema=False)
+@app.get("/ui/{path:path}", include_in_schema=False)
+async def ui(path: str = "") -> FileResponse:
+    """服务管理前端页面入口，所有 /ui 子路径都回落到 SPA 的 index.html。"""
 
     return FileResponse("app/static/index.html", media_type="text/html")
 

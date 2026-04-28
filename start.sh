@@ -54,5 +54,21 @@ fi
 
 PORT="${PORT:-8000}"
 
+# 构建前端（Vue 项目），产物输出到 app/static/
+if [[ -d "frontend" ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    pushd frontend >/dev/null
+    if [[ ! -d "node_modules" ]]; then
+      log "Installing frontend dependencies ..."
+      npm install --no-audit --no-fund --loglevel=error
+    fi
+    log "Building frontend to app/static ..."
+    npm run build
+    popd >/dev/null
+  else
+    log "npm not found, skip frontend build (将使用 app/static 下已有的构建产物)"
+  fi
+fi
+
 log "Starting server on http://127.0.0.1:${PORT}/ui"
 exec python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port "${PORT}"

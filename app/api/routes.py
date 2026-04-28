@@ -1,13 +1,18 @@
 from fastapi import APIRouter, HTTPException
 
 from ..schemas.rest import (
+    AgentCommandHistoryResponse,
     AgentsResponse,
     AgentInfo,
     CommandStatusResponse,
     CreateCommandRequest,
     CreateCommandResponse,
 )
-from ..services.commands import create_command, get_command_status
+from ..services.commands import (
+    create_command,
+    get_command_status,
+    list_commands_for_agent,
+)
 from ..ws.manager import manager
 from ..schemas.ws import CommandPushPayload
 
@@ -64,3 +69,14 @@ async def list_agents() -> AgentsResponse:
         )
 
     return AgentsResponse(agents=agents)
+
+
+@router.get(
+    "/agents/{device_id}/commands",
+    response_model=AgentCommandHistoryResponse,
+)
+async def list_agent_commands(device_id: str) -> AgentCommandHistoryResponse:
+    """返回某个 Agent 参与过的历史命令，按时间倒序。"""
+
+    items = list_commands_for_agent(device_id)
+    return AgentCommandHistoryResponse(device_id=device_id, items=items)

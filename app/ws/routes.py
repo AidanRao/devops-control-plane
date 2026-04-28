@@ -177,7 +177,7 @@ def _random_nonce() -> str:
 async def _handle_incoming_event(device_id: str, data: Any) -> None:
     """根据事件类型进行最小处理。
 
-    - agent.tick: 更新内存状态（TODO）；
+    - agent.tick: 更新心跳状态
     - result.chunk: 解析结果并写入内存 commands 状态，然后回发 result.ack。
     """
 
@@ -192,6 +192,7 @@ async def _handle_incoming_event(device_id: str, data: Any) -> None:
 
     if event == "agent.tick":
         # 更新内存中的最后心跳时间，供 /api/agents 查询展示。
+        print(f"agent.tick: {payload}")
         manager.update_heartbeat(device_id)
         return
 

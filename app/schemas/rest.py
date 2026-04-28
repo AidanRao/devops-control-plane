@@ -38,6 +38,25 @@ class CommandStatusResponse(BaseModel):
     )
 
 
+class AgentCommandHistoryItem(BaseModel):
+    """单个 Agent 的历史命令条目（按 Agent 聚合视角）。"""
+
+    task_uuid: str
+    command: str
+    status: str = Field(
+        ..., description="该 Agent 上的执行状态：Dispatching / Running / Finished 等。"
+    )
+    exitCode: Optional[int] = None
+    createdAt: datetime = Field(..., description="命令创建时间（UTC）。")
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+
+
+class AgentCommandHistoryResponse(BaseModel):
+    device_id: str
+    items: List[AgentCommandHistoryItem] = Field(default_factory=list)
+
+
 class AgentInfo(BaseModel):
     """在线 Agent 的最小视图。"""
 

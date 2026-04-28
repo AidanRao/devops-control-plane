@@ -1,7 +1,9 @@
-from typing import Dict
+from datetime import datetime
+from typing import Dict, List
 from uuid import uuid4
 
 from ..schemas.rest import (
+    AgentCommandHistoryItem,
     CommandResultSummary,
     CommandStatusResponse,
     CreateCommandRequest,
@@ -12,6 +14,8 @@ from ..schemas.rest import (
 # _commands[task_uuid] = {
 #     "request": CreateCommandRequest,
 #     "status": "Pending" | "Dispatching" | "Running" | "Succeeded" | "Failed",
+#     "targets": ["agent_id", ...],  # 目标 Agent 列表；为空表示广播
+#     "created_at": datetime,        # 命令创建时间（UTC）
 # }
 # _results[task_uuid][agent_id] = CommandResultSummary
 _commands: Dict[str, Dict] = {}
@@ -22,12 +26,15 @@ def create_command(req: CreateCommandRequest) -> str:
     """创建命令并返回 task_uuid。
 
     初始状态设为 Dispatching，表示已经进入下发流程但尚未收到执行结果。
+    targets 为空列表时表示广播到所有在线 Agent。
     """
 
     task_uuid = str(uuid4())
     _commands[task_uuid] = {
         "request": req,
         "status": "Dispatching",
+        "targets": req.targets or [],
+        "created_at": datetime.utcnow(),
     }
     return task_uuid
 
@@ -37,11 +44,16 @@ def get_command_status(task_uuid: str):  # -> CommandStatusResponse | None
     if not cmd:
         return None
 
+    targets = cmd.get("targets", [])
     results = _results.get(task_uuid, {})
+    if targets:
+        filtered = {k: v for k, v in results.items() if k in targets}
+    else:
+        filtered = results
     return CommandStatusResponse(
         task_uuid=task_uuid,
         status=cmd.get("status", "Pending"),
-        results=list(results.values()),
+        results=list(filtered.values()),
     )
 
 
@@ -57,6 +69,13 @@ def update_result(task_uuid: str, agent_id: str, result: CommandResultSummary) -
       - Succeeded:    收到 final 分片且 exitCode == 0；
       - Failed:       收到 final 分片且 exitCode != 0，或 exitCode 缺失。
     """
+
+    # 0) 过滤非目标 Agent 的结果。
+    cmd = _commands.get(task_uuid)
+    if cmd:
+        targets = cmd.get("targets", [])
+        if targets and agent_id not in targets:
+            return
 
     # 1) 按 agent 聚合 stdout/stderr。
     bucket = _results.setdefault(task_uuid, {})
@@ -105,3 +124,36 @@ def update_result(task_uuid: str, agent_id: str, result: CommandResultSummary) -
             cmd["status"] = "Succeeded"
         else:
             cmd["status"] = "Failed"
+
+
+def list_commands_for_agent(device_id: str) -> List[AgentCommandHistoryItem]:
+    """列出某个 Agent 参与过的所有命令，按创建时间倒序。
+
+    匹配规则：
+    - 命令 targets 明确包含该 device_id；或
+    - 命令为广播（targets 为空）且该 Agent 上报过结果。
+    """
+
+    items: List[AgentCommandHistoryItem] = []
+    for task_uuid, cmd in _commands.items():
+        targets = cmd.get("targets", [])
+        agent_result = _results.get(task_uuid, {}).get(device_id)
+        is_target = device_id in targets if targets else agent_result is not None
+        if not is_target:
+            continue
+
+        req: CreateCommandRequest = cmd.get("request")
+        items.append(
+            AgentCommandHistoryItem(
+                task_uuid=task_uuid,
+                command=req.command if req else "",
+                status=(agent_result.status if agent_result else cmd.get("status", "Pending")),
+                exitCode=agent_result.exitCode if agent_result else None,
+                createdAt=cmd.get("created_at") or datetime.utcnow(),
+                stdout=agent_result.stdout if agent_result else None,
+                stderr=agent_result.stderr if agent_result else None,
+            )
+        )
+
+    items.sort(key=lambda it: it.createdAt, reverse=True)
+    return items
