@@ -1,5 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import {
+  createTerminalSession,
+  deleteTerminalSession,
+  listTerminalSessions,
+} from '@/api/terminalSessions'
 import TerminalConsole from './TerminalConsole.vue'
 
 const props = defineProps<{
@@ -11,99 +16,61 @@ const props = defineProps<{
   memTotal?: number | null
 }>()
 
-const emit = defineEmits<{
-  (e: 'command-finished', payload: { taskUuid: string }): void
-}>()
-
 type SessionMeta = {
   id: string
   title: string
+  status: string
 }
 
 const sessions = ref<SessionMeta[]>([])
 const activeSessionId = ref<string>('default')
 const consoleRefs = ref<Record<string, InstanceType<typeof TerminalConsole> | null>>({})
 const showRail = computed(() => sessions.value.length > 1)
+const loadingSessions = ref(false)
+const creatingSession = ref(false)
 
 const MAX_SESSIONS = 8
 
-function sessionsKey() {
-  return `terminal-sessions:${props.deviceId}`
-}
-
-function cwdKey(deviceId: string, sessionId: string) {
-  return `terminal-cwd:${deviceId}:${sessionId}`
-}
-
-function newId() {
-  // browser-safe uuid
-  try {
-    return crypto.randomUUID()
-  } catch {
-    return `s_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`
-  }
+function activeSessionKey() {
+  return `terminal-active-session:${props.deviceId}`
 }
 
 function defaultTitle(idx: number) {
   return idx === 1 ? 'zsh' : `zsh-${idx}`
 }
 
-function persistSessions() {
+function persistActiveSession() {
   try {
-    localStorage.setItem(
-      sessionsKey(),
-      JSON.stringify({
-        activeSessionId: activeSessionId.value,
-        sessions: sessions.value,
-      }),
-    )
+    localStorage.setItem(activeSessionKey(), activeSessionId.value)
   } catch {
     // ignore
   }
 }
 
-function ensureDefaultSession() {
-  if (sessions.value.length > 0) return
-  sessions.value = [{ id: 'default', title: defaultTitle(1) }]
-  activeSessionId.value = 'default'
-  persistSessions()
+function hydrateSessionMetas(items: Array<{ sessionId: string; title: string; status: string }>) {
+  sessions.value = items.map((item) => ({
+    id: item.sessionId,
+    title: item.title,
+    status: item.status,
+  }))
 }
 
-function migrateLegacyCwdIfNeeded() {
-  // Legacy key: terminal-cwd:<deviceId>
-  const legacyKey = `terminal-cwd:${props.deviceId}`
-  const nextKey = cwdKey(props.deviceId, 'default')
+async function loadSessions() {
+  loadingSessions.value = true
   try {
-    const legacy = localStorage.getItem(legacyKey)
-    if (legacy && !localStorage.getItem(nextKey)) {
-      localStorage.setItem(nextKey, legacy)
-    }
-  } catch {
-    // ignore
-  }
-}
-
-function loadSessions() {
-  try {
-    const raw = localStorage.getItem(sessionsKey())
-    if (!raw) {
-      migrateLegacyCwdIfNeeded()
-      ensureDefaultSession()
+    const { items } = await listTerminalSessions(props.deviceId)
+    if (!items.length) {
+      await createSession()
       return
     }
-    const parsed = JSON.parse(raw) as { activeSessionId?: string; sessions?: SessionMeta[] }
-    const list = Array.isArray(parsed.sessions) ? parsed.sessions.filter((s) => s?.id && s?.title) : []
-    sessions.value = list.length ? list : [{ id: 'default', title: defaultTitle(1) }]
-    activeSessionId.value = parsed.activeSessionId && sessions.value.some((s) => s.id === parsed.activeSessionId)
-      ? parsed.activeSessionId
+    hydrateSessionMetas(items)
+    const stored = localStorage.getItem(activeSessionKey())
+    activeSessionId.value = stored && sessions.value.some((s) => s.id === stored)
+      ? stored
       : sessions.value[0].id
-    migrateLegacyCwdIfNeeded()
-    persistSessions()
-  } catch {
-    migrateLegacyCwdIfNeeded()
-    sessions.value = [{ id: 'default', title: defaultTitle(1) }]
-    activeSessionId.value = 'default'
-    persistSessions()
+    persistActiveSession()
+  } finally {
+    loadingSessions.value = false
   }
 }
 
@@ -120,60 +87,65 @@ function focusActive() {
 function setActive(id: string) {
   if (activeSessionId.value === id) return
   activeSessionId.value = id
-  persistSessions()
+  persistActiveSession()
   focusActive()
 }
 
-function createSession() {
-  if (sessions.value.length >= MAX_SESSIONS) return
-
-  const id = newId()
-  const title = defaultTitle(sessions.value.length + 1)
-
-  // Inherit cwd from current active session by copying localStorage value.
+async function createSession() {
+  if (sessions.value.length >= MAX_SESSIONS || creatingSession.value) return
+  creatingSession.value = true
   try {
-    const fromKey = cwdKey(props.deviceId, activeSessionId.value)
-    const toKey = cwdKey(props.deviceId, id)
-    const v = localStorage.getItem(fromKey)
-    if (v) localStorage.setItem(toKey, v)
-  } catch {
-    // ignore
+    const title = defaultTitle(sessions.value.length + 1)
+    const { session } = await createTerminalSession(props.deviceId, {
+      shell: '/bin/zsh',
+      cwd: '',
+      cols: 120,
+      rows: 32,
+      title,
+    })
+    sessions.value = [
+      ...sessions.value,
+      {
+        id: session.sessionId,
+        title: session.title,
+        status: session.status,
+      },
+    ]
+    activeSessionId.value = session.sessionId
+    persistActiveSession()
+    focusActive()
+  } finally {
+    creatingSession.value = false
   }
-
-  sessions.value = [...sessions.value, { id, title }]
-  activeSessionId.value = id
-  persistSessions()
-  focusActive()
 }
 
-function removeSession(id: string) {
+async function removeSession(id: string) {
   if (sessions.value.length <= 1) return
-
   const idx = sessions.value.findIndex((s) => s.id === id)
   if (idx === -1) return
-
+  await deleteTerminalSession(props.deviceId, id)
   const nextSessions = sessions.value.filter((s) => s.id !== id)
-  sessions.value = nextSessions
-
-  try {
-    localStorage.removeItem(cwdKey(props.deviceId, id))
-  } catch {
-    // ignore
-  }
-
   delete consoleRefs.value[id]
+  sessions.value = nextSessions
 
   if (activeSessionId.value === id) {
     const fallback = nextSessions[Math.min(idx, nextSessions.length - 1)] ?? nextSessions[idx - 1]
-    activeSessionId.value = fallback?.id ?? nextSessions[0]?.id ?? 'default'
+    activeSessionId.value = fallback?.id ?? nextSessions[0]?.id ?? ''
   }
 
-  persistSessions()
+  persistActiveSession()
   focusActive()
 }
 
 function fillInput(text: string) {
   consoleRefs.value[activeSessionId.value]?.fillInput(text)
+}
+
+function onSessionState(payload: { sessionId: string; title: string; status: string }) {
+  const session = sessions.value.find((item) => item.id === payload.sessionId)
+  if (!session) return
+  session.title = payload.title || session.title
+  session.status = payload.status || session.status
 }
 
 defineExpose({
@@ -182,18 +154,16 @@ defineExpose({
 })
 
 onMounted(() => {
-  loadSessions()
-  focusActive()
+  void loadSessions()
 })
 
 watch(
   () => props.deviceId,
   () => {
     sessions.value = []
-    activeSessionId.value = 'default'
+    activeSessionId.value = ''
     consoleRefs.value = {}
-    loadSessions()
-    focusActive()
+    void loadSessions()
   },
 )
 </script>
@@ -208,14 +178,14 @@ watch(
       :device-id="deviceId"
       :session-id="s.id"
       :show-rail="showRail"
-      :can-create-session="sessions.length < MAX_SESSIONS"
+      :can-create-session="sessions.length < MAX_SESSIONS && !loadingSessions && !creatingSession"
       :cpu-percent="cpuPercent"
       :mem-percent="memPercent"
       :mem-used="memUsed"
       :mem-total="memTotal"
       :banner="banner"
-      @command-finished="emit('command-finished', $event)"
       @create-session="createSession"
+      @session-state="onSessionState"
     >
       <template #rail>
         <div v-if="showRail" class="rail-list">

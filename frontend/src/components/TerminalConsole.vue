@@ -1,27 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useCommandExecutor } from '@/composables/useCommandExecutor'
-import { useTerminalCwd } from '@/composables/useTerminalCwd'
-import { useTerminalHistory } from '@/composables/useTerminalHistory'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
+import { useTerminalSession } from '@/composables/useTerminalSession'
 
 /**
- * 交互式终端组件：
- * - 输入命令 → Enter 下发 → 自动轮询结果 → 输出到当前 block；
- * - Ctrl+C / Esc 停止对当前任务的结果追踪（不中断 agent 上的实际执行）；
- * - ↑ / ↓ 浏览本地输入历史。
+ * xterm 终端组件：
+ * - 每个组件绑定一个真实 terminal session；
+ * - xterm 负责渲染 ANSI/PTY 原始输出；
+ * - 输入通过 terminal.stdin.write 写入 PTY；
+ * - Ctrl+C 通过 signal 发送给前台进程组。
  */
 
 const props = defineProps<{
   deviceId: string
-  /** 终端 session id，用于隔离 cwd 持久化等状态 */
   sessionId?: string
-  /** 是否显示右侧 rail 区域 */
   showRail?: boolean
-  /** 是否允许创建新终端 */
   canCreateSession?: boolean
-  /** 可选：初始提示横幅 */
   banner?: string
-  /** 可选：agent 侧上报的实时指标（来自心跳聚合） */
   cpuPercent?: number | null
   memPercent?: number | null
   memUsed?: number | null
@@ -29,38 +26,46 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'command-finished', payload: { taskUuid: string }): void
   (e: 'create-session'): void
+  (e: 'session-state', payload: { sessionId: string; title: string; status: string }): void
 }>()
 
-const input = ref('')
-const bodyEl = ref<HTMLDivElement | null>(null)
-const inputEl = ref<HTMLInputElement | null>(null)
-// 光标在 input 中的位置（字符下标），用于把自定义方块光标放到正确位置
-const caretIndex = ref(0)
-const measureEl = ref<HTMLSpanElement | null>(null)
-const caretOffset = ref(0)
-const caretChar = computed(() => {
-  const ch = input.value.charAt(caretIndex.value)
-  if (!ch) return '\u00a0'
-  if (ch === ' ') return '\u00a0'
-  return ch
+const terminalHostEl = ref<HTMLDivElement | null>(null)
+const currentSessionId = computed(() => props.sessionId ?? 'default')
+
+const {
+  connected,
+  sessionStatus,
+  cwd,
+  connect,
+  sendInput,
+  sendSignal,
+  resize,
+  cleanup,
+  reset,
+} = useTerminalSession({
+  sessionId: () => currentSessionId.value,
+  onSessionState: (payload) => {
+    emit('session-state', {
+      sessionId: payload.sessionId,
+      title: payload.title,
+      status: payload.status,
+    })
+  },
+  onChunk: (payload) => writeChunk(payload.data),
+  onClosed: (payload) => writeSystemLine(`[session closed] ${payload.reason}`),
+  onError: (payload) => writeSystemLine(`[session error] ${payload.code}: ${payload.message}`),
+  onDisconnect: () => writeSystemLine('[terminal disconnected]'),
 })
 
-const deviceIdRef = computed(() => props.deviceId)
-const sessionIdRef = computed(() => props.sessionId ?? 'default')
-const {
-  cwd,
-  currentPromptDir,
-  isTempCwd,
-  loadCwd,
-  persistCwd,
-  clearCwd,
-  parseCdCommand,
-  applyCdResult,
-  resetForDevice,
-} = useTerminalCwd(deviceIdRef, sessionIdRef)
-const { record, handleArrowKeydown } = useTerminalHistory()
+const isOpen = computed(() => connected.value && sessionStatus.value === 'open')
+const statusLabel = computed(() => (connected.value ? sessionStatus.value : 'disconnected'))
+
+let terminal: Terminal | null = null
+let fitAddon: FitAddon | null = null
+let dataListener: { dispose: () => void } | null = null
+let resizeTimer: number | undefined
+const pendingWrites: string[] = []
 
 function formatPercent(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(value)) return '—'
@@ -80,200 +85,222 @@ function formatBytes(value?: number | null) {
   return `${n.toFixed(digits)} ${units[idx]}`
 }
 
-function scrollToBottom() {
+function queueWrite(data: string) {
+  if (terminal) {
+    terminal.write(data)
+    return
+  }
+  pendingWrites.push(data)
+}
+
+function writeChunk(data: string) {
+  queueWrite(data)
+}
+
+function writeSystemLine(text: string) {
+  queueWrite(`${text}\r\n`)
+}
+
+function flushPendingWrites() {
+  if (!terminal || !pendingWrites.length) return
+  while (pendingWrites.length) {
+    terminal.write(pendingWrites.shift()!)
+  }
+}
+
+function writeBanner() {
+  if (!props.banner) return
+  for (const line of props.banner.split(/\r?\n/)) {
+    if (line.trim()) writeSystemLine(line)
+  }
+}
+
+function disposeTerminal() {
+  window.clearTimeout(resizeTimer)
+  resizeTimer = undefined
+  dataListener?.dispose()
+  dataListener = null
+  fitAddon = null
+  terminal?.dispose()
+  terminal = null
+}
+
+function createTerminal() {
+  disposeTerminal()
+  if (!terminalHostEl.value) return
+
+  const term = new Terminal({
+    fontFamily: "'JetBrains Mono Variable', 'SFMono-Regular', Menlo, Consolas, monospace",
+    fontSize: 13,
+    lineHeight: 1.35,
+    cursorBlink: true,
+    scrollback: 5000,
+    allowTransparency: false,
+    theme: {
+      background: '#0b0f17',
+      foreground: '#e2e8f0',
+      cursor: '#93c5fd',
+      cursorAccent: '#0b0f17',
+      selectionBackground: 'rgba(96, 165, 250, 0.28)',
+      black: '#0b0f17',
+      red: '#f87171',
+      green: '#4ade80',
+      yellow: '#fbbf24',
+      blue: '#60a5fa',
+      magenta: '#c084fc',
+      cyan: '#22d3ee',
+      white: '#e2e8f0',
+      brightBlack: '#64748b',
+      brightRed: '#fca5a5',
+      brightGreen: '#86efac',
+      brightYellow: '#fde68a',
+      brightBlue: '#93c5fd',
+      brightMagenta: '#d8b4fe',
+      brightCyan: '#67e8f9',
+      brightWhite: '#f8fafc',
+    },
+  })
+  const fit = new FitAddon()
+  term.loadAddon(fit)
+  term.open(terminalHostEl.value)
+
+  terminal = term
+  fitAddon = fit
+  dataListener = term.onData((data: string) => {
+    void sendInput(data).catch((err) => {
+      writeSystemLine(`[send error] ${(err as Error).message || 'unknown'}`)
+    })
+  })
+
+  writeBanner()
+  writeSystemLine(`terminal session=${currentSessionId.value} · waiting for attach`)
+  flushPendingWrites()
+  requestAnimationFrame(() => {
+    void syncResize(true)
+    term.focus()
+  })
+}
+
+function resetTerminalViewport() {
+  pendingWrites.length = 0
+  if (!terminal) return
+  terminal.reset()
+  writeBanner()
+  writeSystemLine(`terminal session=${currentSessionId.value} · waiting for attach`)
+}
+
+async function syncResize(immediate = false) {
+  if (!terminal || !fitAddon || !terminalHostEl.value) return
+  if (terminalHostEl.value.offsetWidth <= 0 || terminalHostEl.value.offsetHeight <= 0) return
+  const currentFitAddon = fitAddon
+
+  const perform = async () => {
+    currentFitAddon.fit()
+    if (terminal && terminal.cols > 0 && terminal.rows > 0) {
+      try {
+        await resize(terminal.cols, terminal.rows)
+      } catch {
+        // ignore resize errors during attach/reconnect
+      }
+    }
+  }
+
+  if (immediate) {
+    await perform()
+    return
+  }
+
+  window.clearTimeout(resizeTimer)
+  resizeTimer = window.setTimeout(() => {
+    void perform()
+  }, 50)
+}
+
+function focusTerminal() {
   nextTick(() => {
-    if (bodyEl.value) bodyEl.value.scrollTop = bodyEl.value.scrollHeight
+    requestAnimationFrame(() => {
+      terminal?.focus()
+      void syncResize(true)
+    })
   })
 }
 
-function focusInput() {
-  nextTick(() => inputEl.value?.focus())
+function onWindowResize() {
+  void syncResize()
 }
 
-const {
-  lines,
-  running,
-  dispatching,
-  submit: executeCommand,
-  cancelTracking,
-  pushBanner,
-  reset,
-  cleanup,
-} = useCommandExecutor({
-  deviceId: () => props.deviceId,
-  scrollToBottom,
-  focusInput,
-  onCommandFinished: (payload) => emit('command-finished', payload),
-  onCdApplied: (pending, exitCode) => applyCdResult(pending, exitCode),
-})
-
-pushBanner(props.banner, props.deviceId)
-
-/**
- * 根据 input 当前选区位置，测量出自定义光标应该放置的像素偏移。
- * 通过一个隐藏的 span 镜像渲染「光标前的文本」，取其宽度即可。
- */
-function updateCaretOffset() {
-  const el = inputEl.value
-  const meas = measureEl.value
-  if (!el || !meas) return
-  const pos = el.selectionStart ?? el.value.length
-  caretIndex.value = pos
-  // 用 NBSP 替换空格，避免末尾空格被 HTML 折叠
-  const before = el.value.slice(0, pos).replace(/ /g, '\u00a0')
-  meas.textContent = before
-  caretOffset.value = meas.offsetWidth
-}
-
-function onInputEvent() {
-  // v-model 会在 input 事件后触发，selectionStart 已经更新，nextTick 让 measure span 的内容先更新
-  nextTick(updateCaretOffset)
-}
-
-function onInputSelectionChange() {
-  updateCaretOffset()
-}
-
-async function submit() {
-  const cmd = input.value.trim()
-  if (!cmd) return
-  const cd = parseCdCommand(cmd)
-  const commandToSend = cd ? cd.commandToSend : cmd
-
-  // 输入历史
-  record(cmd)
-  input.value = ''
-  nextTick(updateCaretOffset)
-  await executeCommand({
-    displayCommand: cmd,
-    commandToSend,
-    promptDir: currentPromptDir.value,
-    workDir: cwd.value ? cwd.value : undefined,
-    pendingCd: cd?.pending ?? null,
-    timeoutSeconds: 60,
-  })
-}
-
-function onKeydown(e: KeyboardEvent) {
-  // Ctrl+C / Cmd+C / Esc 停止追踪（input 未禁用，这里仍可进入）
-  const isCtrlC = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')
-  const isEsc = e.key === 'Escape'
-  if ((isCtrlC || isEsc) && running.value) {
-    // Ctrl+C 若 input 里有选区（用户想复制），则不拦截
-    const inputNode = inputEl.value
-    if (isCtrlC && inputNode) {
-      const hasSelection =
-        typeof inputNode.selectionStart === 'number' &&
-        typeof inputNode.selectionEnd === 'number' &&
-        inputNode.selectionStart !== inputNode.selectionEnd
-      if (hasSelection) return
-    }
-    e.preventDefault()
-    cancelTracking()
-    return
-  }
-
-  if (handleArrowKeydown(e, { input, inputEl, updateCaretOffset })) {
-    return
-  }
-  if (e.key === 'Enter') {
-    if (running.value) {
-      // 执行中禁止回车再下发新命令
-      e.preventDefault()
-      return
-    }
-    e.preventDefault()
-    submit()
-  }
-
-  // Keep custom caret in sync for navigation keys (holding left/right shouldn't "jump" on keyup).
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
-    // Let the browser update selectionStart first, then measure.
-    requestAnimationFrame(updateCaretOffset)
-  }
-}
-
-// 兜底：全局 keydown 监听 Ctrl+C / ⌘+C / Esc，保证焦点不在 input 时也生效
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (!running.value) return
   const isCtrlC = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')
-  const isEsc = e.key === 'Escape'
-  if (!isCtrlC && !isEsc) return
-  // 若事件来源于我们自己的 input，交给 onKeydown 处理以便走选区判断
-  if (e.target === inputEl.value) return
+  if (!isCtrlC) return
+  if (!terminalHostEl.value?.contains(document.activeElement)) return
+  if (terminal?.hasSelection()) return
   e.preventDefault()
-  cancelTracking()
+  void sendSignal('SIGINT').catch(() => {})
 }
 
-// 当 deviceId 切换时重置终端
 watch(
-  () => props.deviceId,
+  () => [props.deviceId, currentSessionId.value],
   () => {
-    reset(props.banner, props.deviceId)
-    resetForDevice()
-    focusInput()
+    reset()
+    resetTerminalViewport()
+    connect()
+    focusTerminal()
+    void syncResize(true)
+  },
+)
+
+watch(
+  () => props.showRail,
+  () => {
+    nextTick(() => {
+      void syncResize(true)
+    })
   },
 )
 
 onMounted(() => {
+  createTerminal()
   window.addEventListener('keydown', onGlobalKeydown)
-  loadCwd()
-  focusInput()
+  window.addEventListener('resize', onWindowResize)
+  connect()
+  focusTerminal()
+  void syncResize(true)
 })
 
 onBeforeUnmount(() => {
   cleanup()
+  disposeTerminal()
   window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('resize', onWindowResize)
 })
 
-// 暴露给父组件：把历史命令回填到输入框（便于点击历史时快速复用）
 defineExpose({
-  focus: focusInput,
+  focus: focusTerminal,
   fillInput: (text: string) => {
-    input.value = text
-    focusInput()
-    nextTick(() => {
-      const el = inputEl.value
-      if (el) el.setSelectionRange(el.value.length, el.value.length)
-      updateCaretOffset()
+    focusTerminal()
+    void sendInput(text).catch((err) => {
+      writeSystemLine(`[send error] ${(err as Error).message || 'unknown'}`)
     })
   },
 })
 </script>
 
 <template>
-  <div class="terminal" @click="focusInput">
-    <!-- 顶部 chrome 区域允许交互（cwd 等），避免点击时把焦点抢到命令输入 -->
+  <div class="terminal" @click="focusTerminal">
     <div class="terminal-chrome" @click.stop>
       <span class="dot dot--red" />
       <span class="dot dot--yellow" />
       <span class="dot dot--green" />
       <span class="chrome-title">
         <span class="chrome-host">agent@{{ deviceId }}</span>
-        <span v-if="running" class="chrome-tag chrome-tag--live">● live</span>
+        <span class="chrome-tag" :class="isOpen ? 'chrome-tag--live' : 'chrome-tag--idle'">
+          {{ statusLabel }}
+        </span>
       </span>
       <div class="chrome-right">
-        <span
-          class="cwd-pill"
-          :class="{
-            'cwd-pill--set': Boolean(cwd),
-            'cwd-pill--temp': isTempCwd,
-          }"
-          title="工作目录（会话级）"
-        >
+        <span class="cwd-pill" :class="{ 'cwd-pill--set': Boolean(cwd) }" title="当前工作目录">
           <span class="cwd-key">cwd</span>
-          <input
-            v-model="cwd"
-            class="cwd-input"
-            type="text"
-            spellcheck="false"
-            placeholder="(default)"
-            @mousedown.stop
-            @click.stop
-            @blur="persistCwd"
-            @keydown.enter.prevent="persistCwd"
-            @keydown.esc.prevent="clearCwd"
-          />
+          <span class="cwd-value">{{ cwd || '(default)' }}</span>
         </span>
         <span class="metric-pill" title="CPU usage">
           <span class="metric-key">CPU</span>
@@ -301,72 +328,8 @@ defineExpose({
     </div>
 
     <div class="terminal-content">
-      <div ref="bodyEl" class="terminal-body">
-        <template v-for="(line, i) in lines" :key="i">
-          <div v-if="line.kind === 'cmd'" class="line line--cmd">
-            <el-tooltip
-              v-if="line.exitCode !== undefined && line.exitCode !== null"
-              :content="`exit code: ${line.exitCode}`"
-              placement="top"
-            >
-              <span
-                class="cmd-status-dot"
-                :class="line.exitCode === 0 ? 'cmd-status-dot--success' : 'cmd-status-dot--error'"
-              />
-            </el-tooltip>
-            <span v-else class="cmd-status-dot cmd-status-dot--pending" />
-            <span class="prompt-dir">{{ line.promptDir || '~' }}</span>
-            <span class="prompt">$</span>
-            <span class="cmd-text">{{ line.text }}</span>
-          </div>
-          <div v-else-if="line.kind === 'stdout'" class="line line--stdout">{{ line.text }}</div>
-          <div v-else-if="line.kind === 'stderr'" class="line line--stderr">{{ line.text }}</div>
-          <div v-else-if="line.kind === 'hint'" class="line line--hint">{{ line.text }}</div>
-          <div v-else class="line line--meta">{{ line.text }}</div>
-        </template>
-
-        <!-- 下发中但尚未收到输出的临时指示行；收到第一条输出或终态即消失 -->
-        <div v-if="dispatching" class="line line--dispatching" aria-live="polite">
-          <span class="dispatch-spinner" aria-hidden="true">
-            <span class="spinner-dot" />
-            <span class="spinner-dot" />
-            <span class="spinner-dot" />
-          </span>
-          <span class="dispatch-text">dispatching</span>
-        </div>
-
-        <!-- 当前输入行（始终在最底部） -->
-        <div class="line line--input">
-          <span class="cmd-status-dot cmd-status-dot--pending" />
-          <span class="prompt-dir">{{ currentPromptDir }}</span>
-          <span class="prompt" :class="{ 'prompt--busy': running }">$</span>
-          <div class="input-wrap">
-            <input
-              ref="inputEl"
-              v-model="input"
-              type="text"
-              class="input"
-              spellcheck="false"
-              autocomplete="off"
-              autocapitalize="off"
-              :placeholder="running ? 'tailing output …  (Ctrl+C / Esc to stop)' : ''"
-              @keydown="onKeydown"
-              @input="onInputEvent"
-              @keyup="onInputSelectionChange"
-              @click="onInputSelectionChange"
-              @select="onInputSelectionChange"
-              @focus="onInputSelectionChange"
-            />
-            <!-- 隐藏测量 span：与 input 完全同字体/字号，用于计算光标像素偏移 -->
-            <span ref="measureEl" class="input-measure" aria-hidden="true" />
-            <!-- 自定义方块光标，绝对定位，跟随输入位置移动 -->
-            <span
-              class="caret"
-              :class="{ 'caret--hidden': running }"
-              :style="{ transform: `translateX(${caretOffset}px)` }"
-            >{{ caretChar }}</span>
-          </div>
-        </div>
+      <div class="terminal-body">
+        <div ref="terminalHostEl" class="terminal-host" />
       </div>
 
       <aside v-if="props.showRail && $slots.rail" class="terminal-rail" aria-label="Terminal sessions">
@@ -379,13 +342,9 @@ defineExpose({
 <style scoped>
 .terminal {
   --bg: #0b0f17;
-  --bg-accent: #0f1422;
   --fg: #e2e8f0;
   --muted: #64748b;
   --green: #4ade80;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --blue: #60a5fa;
   --border: #1e293b;
 
   position: relative;
@@ -410,7 +369,6 @@ defineExpose({
   display: flex;
 }
 
-/* 顶部"窗口栏" */
 .terminal-chrome {
   display: flex;
   align-items: center;
@@ -419,15 +377,18 @@ defineExpose({
   background: linear-gradient(180deg, #111827 0%, #0d1320 100%);
   border-bottom: 1px solid var(--border);
 }
+
 .dot {
   width: 11px;
   height: 11px;
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
 }
+
 .dot--red { background: #ff5f57; }
 .dot--yellow { background: #febc2e; }
 .dot--green { background: #28c840; }
+
 .chrome-title {
   margin-left: 12px;
   font-size: 12px;
@@ -437,9 +398,11 @@ defineExpose({
   gap: 8px;
   letter-spacing: 0.3px;
 }
+
 .chrome-host {
   color: #cbd5e1;
 }
+
 .chrome-tag {
   margin-left: 6px;
   padding: 1px 7px;
@@ -448,11 +411,18 @@ defineExpose({
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
+
 .chrome-tag--live {
   color: #052e16;
   background: var(--green);
   animation: pulse 1.4s ease-in-out infinite;
 }
+
+.chrome-tag--idle {
+  color: rgba(226, 232, 240, 0.82);
+  background: rgba(51, 65, 85, 0.8);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
@@ -515,30 +485,19 @@ defineExpose({
   border-color: rgba(96, 165, 250, 0.28);
 }
 
-.cwd-pill--temp {
-  border-color: rgba(251, 191, 36, 0.38);
-}
-
 .cwd-key {
   color: rgba(148, 163, 184, 0.9);
   letter-spacing: 1px;
   flex: none;
 }
 
-.cwd-input {
+.cwd-value {
   width: 100%;
   min-width: 0;
-  background: transparent;
-  border: none;
-  outline: none;
   color: #e2e8f0;
-  font-family: inherit;
-  font-size: 11px;
-  padding: 0;
-}
-
-.cwd-input::placeholder {
-  color: rgba(148, 163, 184, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-pill {
@@ -570,204 +529,48 @@ defineExpose({
   font-size: 10px;
 }
 
-/* 终端正文 */
 .terminal-body {
   flex: 1;
   min-width: 0;
-  padding: 14px 16px 18px;
-  overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.55;
-  background-image:
-    radial-gradient(ellipse at top, rgba(74, 222, 128, 0.04) 0%, transparent 55%),
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0.012) 0px,
-      rgba(255, 255, 255, 0.012) 1px,
-      transparent 1px,
-      transparent 3px
-    );
-  scroll-behavior: smooth;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  padding: 8px 10px 10px;
+  background: var(--bg);
+  overflow: hidden;
 }
-.terminal-body::-webkit-scrollbar { width: 8px; }
-.terminal-body::-webkit-scrollbar-thumb {
-  background: #1f2937;
-  border-radius: 4px;
+
+.terminal-host {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
 }
-.terminal-body::-webkit-scrollbar-track { background: transparent; }
+
+:deep(.xterm) {
+  flex: 1;
+  height: 100%;
+  width: 100%;
+}
+
+:deep(.xterm-viewport) {
+  overflow-y: auto !important;
+}
 
 .terminal-rail {
-  width: 116px;
-  border-left: 1px solid var(--border);
-  background: var(--bg);
-  padding: 10px 8px;
+  width: 118px;
+  min-width: 118px;
+  border-left: 1px solid rgba(30, 41, 59, 0.92);
+  background:
+    linear-gradient(180deg, rgba(7, 15, 28, 0.96) 0%, rgba(6, 12, 24, 0.98) 100%),
+    linear-gradient(90deg, rgba(96, 165, 250, 0.05), rgba(15, 23, 42, 0));
+  box-shadow:
+    inset 1px 0 0 rgba(148, 163, 184, 0.04),
+    inset 24px 0 40px rgba(15, 23, 42, 0.16);
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
-
-.line {
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.line--cmd {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #e2e8f0;
-  margin-top: 2px;
-}
-.cmd-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-  cursor: help;
-}
-.cmd-status-dot--pending {
-  background: transparent;
-  border: 1px solid rgba(148, 163, 184, 0.7);
-  box-sizing: border-box;
-  cursor: default;
-}
-.cmd-status-dot--success {
-  background: #22c55e;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
-}
-.cmd-status-dot--error {
-  background: #ef4444;
-  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
-}
-.line--stdout { color: #cbd5e1; }
-.line--stderr { color: var(--red); }
-.line--hint {
-  color: var(--muted);
-  font-style: italic;
-}
-.line--meta {
-  color: var(--blue);
-  opacity: 0.85;
-}
-
-.prompt-dir {
-  display: inline-block;
-  color: #93c5fd;
-  font-weight: 600;
-  letter-spacing: 0.1px;
-  white-space: nowrap;
-}
-
-.prompt {
-  display: inline-block;
-  color: var(--green);
-  margin-right: 10px;
-  font-weight: 600;
-  text-shadow: 0 0 10px rgba(74, 222, 128, 0.45);
-}
-.prompt--busy {
-  color: var(--yellow);
-  text-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-.cmd-text { color: #f1f5f9; }
-
-/* 下发中指示 */
-.line--dispatching {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #94a3b8;
-  font-style: italic;
-  padding: 2px 0;
-}
-.dispatch-spinner {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-}
-.spinner-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #fbbf24;
-  box-shadow: 0 0 6px rgba(251, 191, 36, 0.55);
-  animation: dot-bounce 1s ease-in-out infinite;
-}
-.spinner-dot:nth-child(2) { animation-delay: 0.15s; }
-.spinner-dot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes dot-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
-  40% { transform: translateY(-3px); opacity: 1; }
-}
-.dispatch-text {
-  font-size: 12.5px;
-  letter-spacing: 0.5px;
-}
-
-/* 当前输入行 */
-.line--input {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 4px;
-}
-.input-wrap {
-  flex: 1;
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-height: 1.55em;
-}
-.input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: #f1f5f9;
-  font-family: inherit;
-  font-size: inherit;
-  caret-color: transparent; /* 用自定义 caret */
-  padding: 0;
-  /* 让自定义 caret 浮在 input 上方不影响点击：input 保持在下层 */
-  position: relative;
-  z-index: 1;
-}
-.input::placeholder { color: #475569; }
-.input:disabled { opacity: 0.85; }
-
-/* 隐藏的测量元素：与 input 完全同字体/字号/字距，不占布局空间 */
-.input-measure {
-  position: absolute;
-  left: 0;
-  top: 0;
-  visibility: hidden;
-  pointer-events: none;
-  white-space: pre;
-  font-family: inherit;
-  font-size: inherit;
-  letter-spacing: inherit;
-  padding: 0;
-}
-
-.caret {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  margin-top: -0.72em;
-  width: 1ch;
-  height: 1.45em;
-  background: rgba(255, 255, 255, 0.96);
-  color: #020617;
-  border-radius: 1px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  line-height: 1;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  pointer-events: none;
-  z-index: 2;
-  transition: transform 60ms linear;
-}
-.caret--hidden { visibility: hidden; }
 </style>

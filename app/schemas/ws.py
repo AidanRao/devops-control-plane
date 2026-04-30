@@ -122,3 +122,83 @@ class HeartbeatPayload(BaseModel):
     deviceId: str
     ts: int
     metrics: Optional[MetricsSnapshot] = None
+
+
+class TerminalSessionOpenPayload(BaseModel):
+    requestId: str
+    sessionId: str
+    deviceId: str
+    shell: str
+    cwd: str
+    env: Optional[Dict[str, str]] = None
+    cols: int
+    rows: int
+    title: str
+
+
+class TerminalSessionOpenedPayload(BaseModel):
+    requestId: str
+    sessionId: str
+    agentSessionRef: str
+    shellPid: int
+    cwd: str
+    title: str
+
+
+class TerminalStdinWritePayload(BaseModel):
+    sessionId: str
+    data: str
+
+
+class TerminalSessionResizePayload(BaseModel):
+    sessionId: str
+    cols: int
+    rows: int
+
+
+class TerminalSessionSignalPayload(BaseModel):
+    sessionId: str
+    signal: str
+
+
+class TerminalSessionClosePayload(BaseModel):
+    sessionId: str
+    reason: Optional[str] = None
+
+
+class TerminalStdoutChunkPayload(BaseModel):
+    sessionId: str
+    seq: int
+    stream: str
+    data: str
+    cwd: Optional[str] = None
+    title: Optional[str] = None
+    isBinary: bool = False
+
+
+class TerminalSessionStatePayload(BaseModel):
+    sessionId: str
+    status: str
+    title: str
+    cwd: Optional[str] = None
+    cols: int
+    rows: int
+    seq: int
+    updatedAt: str
+
+
+class TerminalSessionClosedPayload(BaseModel):
+    sessionId: str
+    exitCode: Optional[int] = None
+    reason: str
+
+
+class TerminalSessionErrorPayload(BaseModel):
+    sessionId: str
+    code: str
+    message: str
+
+
+class TerminalSessionAttachParams(BaseModel):
+    sessionId: str
+    afterSeq: int = 0

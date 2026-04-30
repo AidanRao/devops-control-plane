@@ -5,10 +5,16 @@ from ..schemas.rest import (
     AgentsResponse,
     AgentInfo,
     CommandStatusResponse,
+    CreateTerminalSessionRequest,
+    CreateTerminalSessionResponse,
     CreateCommandRequest,
     CreateCommandResponse,
+    DeleteTerminalSessionResponse,
+    ListTerminalSessionsResponse,
+    TerminalSessionSnapshot,
     UpdateAgentRemarkRequest,
     UpdateAgentRemarkResponse,
+    UpdateTerminalSessionRequest,
 )
 from ..services.commands import (
     create_command,
@@ -16,8 +22,9 @@ from ..services.commands import (
     list_commands_for_agent,
 )
 from ..services.agent_registry import agent_registry
+from ..services.terminal_sessions import terminal_sessions
 from ..ws.manager import manager
-from ..schemas.ws import CommandPushPayload
+from ..schemas.ws import CommandPushPayload, TerminalSessionClosePayload, TerminalSessionOpenPayload
 
 import uuid
 
@@ -106,3 +113,95 @@ async def list_agent_commands(device_id: str) -> AgentCommandHistoryResponse:
 
     items = list_commands_for_agent(device_id)
     return AgentCommandHistoryResponse(device_id=device_id, items=items)
+
+
+@router.post(
+    "/agents/{device_id}/terminal-sessions",
+    response_model=CreateTerminalSessionResponse,
+)
+async def create_terminal_session(
+    device_id: str, body: CreateTerminalSessionRequest
+) -> CreateTerminalSessionResponse:
+    if not manager.has_connection(device_id):
+        raise HTTPException(status_code=503, detail="agent is offline")
+
+    session = terminal_sessions.create_session(
+        device_id=device_id,
+        shell=body.shell,
+        cwd=body.cwd,
+        env=body.env,
+        cols=body.cols,
+        rows=body.rows,
+        title=body.title or body.shell.rsplit("/", 1)[-1],
+    )
+
+    payload = TerminalSessionOpenPayload(
+        requestId=str(uuid.uuid4()),
+        sessionId=session.sessionId,
+        deviceId=device_id,
+        shell=body.shell,
+        cwd=body.cwd,
+        env=body.env,
+        cols=body.cols,
+        rows=body.rows,
+        title=session.title,
+    )
+    await manager.send_event(device_id, "terminal.session.open", payload.model_dump())
+    return CreateTerminalSessionResponse(session=session)
+
+
+@router.get(
+    "/agents/{device_id}/terminal-sessions",
+    response_model=ListTerminalSessionsResponse,
+)
+async def list_terminal_sessions(device_id: str) -> ListTerminalSessionsResponse:
+    return ListTerminalSessionsResponse(items=terminal_sessions.list_sessions_for_device(device_id))
+
+
+@router.get(
+    "/agents/{device_id}/terminal-sessions/{session_id}",
+    response_model=TerminalSessionSnapshot,
+)
+async def get_terminal_session(
+    device_id: str, session_id: str
+) -> TerminalSessionSnapshot:
+    snapshot = terminal_sessions.get_snapshot(session_id)
+    if snapshot is None or snapshot.session.deviceId != device_id:
+        raise HTTPException(status_code=404, detail="terminal session not found")
+    snapshot.connectedClients = manager.count_terminal_clients(session_id)
+    return snapshot
+
+
+@router.patch(
+    "/agents/{device_id}/terminal-sessions/{session_id}",
+    response_model=CreateTerminalSessionResponse,
+)
+async def update_terminal_session(
+    device_id: str, session_id: str, body: UpdateTerminalSessionRequest
+) -> CreateTerminalSessionResponse:
+    session = terminal_sessions.get_session(session_id)
+    if session is None or session.deviceId != device_id:
+        raise HTTPException(status_code=404, detail="terminal session not found")
+    updated = terminal_sessions.update_session_title(session_id, body.title)
+    return CreateTerminalSessionResponse(session=updated)
+
+
+@router.delete(
+    "/agents/{device_id}/terminal-sessions/{session_id}",
+    response_model=DeleteTerminalSessionResponse,
+)
+async def delete_terminal_session(
+    device_id: str, session_id: str
+) -> DeleteTerminalSessionResponse:
+    session = terminal_sessions.get_session(session_id)
+    if session is None or session.deviceId != device_id:
+        raise HTTPException(status_code=404, detail="terminal session not found")
+
+    if manager.has_connection(device_id):
+        terminal_sessions.mark_closing(session_id, "client_closed")
+        payload = TerminalSessionClosePayload(sessionId=session_id, reason="client_closed")
+        await manager.send_event(device_id, "terminal.session.close", payload.model_dump())
+    else:
+        terminal_sessions.mark_closed(session_id, exit_code=None, reason="agent_offline")
+
+    return DeleteTerminalSessionResponse(ok=True)

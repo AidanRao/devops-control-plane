@@ -36,6 +36,9 @@ class ConnectionManager:
         self.tokens: Dict[str, DeviceTokenInfo] = {}
         # 设备运行时元信息，例如最后一次心跳时间。
         self.meta: Dict[str, DeviceMeta] = {}
+        # browser terminal ws 按 session 维度附着。
+        self.terminal_clients: Dict[str, Dict[int, WebSocket]] = {}
+        self.terminal_client_session: Dict[int, str] = {}
 
     async def register(self, device_id: str, websocket: WebSocket) -> None:
         self.active_connections[device_id] = websocket
@@ -48,6 +51,19 @@ class ConnectionManager:
         if ws is not None:
             await ws.send_json(message)
 
+    async def send_event(self, device_id: str, event: str, payload: dict) -> None:
+        await self.send_json(
+            device_id,
+            {
+                "type": "event",
+                "event": event,
+                "payload": payload,
+            },
+        )
+
+    def has_connection(self, device_id: str) -> bool:
+        return device_id in self.active_connections
+
     async def broadcast_command(self, payload: CommandPushPayload) -> None:
         """向所有在线 Agent 广播 command.push。MVP 不做目标筛选。"""
 
@@ -58,6 +74,50 @@ class ConnectionManager:
         }
         for ws in list(self.active_connections.values()):
             await ws.send_json(message)
+
+    def attach_terminal_client(self, session_id: str, websocket: WebSocket) -> None:
+        ws_id = id(websocket)
+        old_session_id = self.terminal_client_session.get(ws_id)
+        if old_session_id and old_session_id != session_id:
+            clients = self.terminal_clients.get(old_session_id, {})
+            clients.pop(ws_id, None)
+            if not clients:
+                self.terminal_clients.pop(old_session_id, None)
+
+        clients = self.terminal_clients.setdefault(session_id, {})
+        clients[ws_id] = websocket
+        self.terminal_client_session[ws_id] = session_id
+
+    def detach_terminal_client(self, websocket: WebSocket) -> None:
+        ws_id = id(websocket)
+        session_id = self.terminal_client_session.pop(ws_id, None)
+        if not session_id:
+            return
+        clients = self.terminal_clients.get(session_id, {})
+        clients.pop(ws_id, None)
+        if not clients:
+            self.terminal_clients.pop(session_id, None)
+
+    def count_terminal_clients(self, session_id: str) -> int:
+        return len(self.terminal_clients.get(session_id, {}))
+
+    async def broadcast_terminal_event(self, session_id: str, event: str, payload: dict) -> None:
+        clients = list(self.terminal_clients.get(session_id, {}).values())
+        stale: list[WebSocket] = []
+        for ws in clients:
+            try:
+                await ws.send_json(
+                    {
+                        "type": "event",
+                        "event": event,
+                        "payload": payload,
+                    }
+                )
+            except Exception:
+                stale.append(ws)
+
+        for ws in stale:
+            self.detach_terminal_client(ws)
 
     # ---- deviceToken 管理 ----
 

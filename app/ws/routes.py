@@ -21,9 +21,20 @@ from ..schemas.ws import (
     ResponseFrame,
     ResultAckPayload,
     ResultChunkPayload,
+    TerminalSessionAttachParams,
+    TerminalSessionClosePayload,
+    TerminalSessionClosedPayload,
+    TerminalSessionErrorPayload,
+    TerminalSessionOpenedPayload,
+    TerminalSessionResizePayload,
+    TerminalSessionSignalPayload,
+    TerminalSessionStatePayload,
+    TerminalStdinWritePayload,
+    TerminalStdoutChunkPayload,
 )
 from ..services.commands import update_result
 from ..services.agent_registry import agent_registry
+from ..services.terminal_sessions import terminal_sessions
 from .manager import manager
 
 
@@ -173,6 +184,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         manager.disconnect(device_id)
 
 
+@router.websocket("/ws/terminal")
+async def terminal_websocket_endpoint(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            await _handle_terminal_browser_message(websocket, raw)
+    except WebSocketDisconnect:
+        manager.detach_terminal_client(websocket)
+
+
 def _random_nonce() -> str:
     return secrets.token_hex(16)
 
@@ -182,6 +205,7 @@ async def _handle_incoming_event(device_id: str, data: Any) -> None:
 
     - agent.tick: 更新心跳状态
     - result.chunk: 解析结果并写入内存 commands 状态，然后回发 result.ack。
+    - terminal.*: 更新 terminal session 状态，并向浏览器附着端转发事件。
     """
 
     if not isinstance(data, dict):
@@ -230,3 +254,264 @@ async def _handle_incoming_event(device_id: str, data: Any) -> None:
         )
         frame = EventFrame(event="result.ack", payload=ack.model_dump())
         await manager.send_json(device_id, frame.model_dump())
+        return
+
+    if event == "terminal.session.opened":
+        try:
+            payload_model = TerminalSessionOpenedPayload.model_validate(payload)
+        except Exception:
+            return
+        session = terminal_sessions.mark_opened(
+            session_id=payload_model.sessionId,
+            agent_session_ref=payload_model.agentSessionRef,
+            shell_pid=payload_model.shellPid,
+            cwd=payload_model.cwd,
+            title=payload_model.title,
+        )
+        await manager.broadcast_terminal_event(
+            payload_model.sessionId,
+            "terminal.session.state",
+            {
+                "sessionId": session.sessionId,
+                "status": session.status,
+                "title": session.title,
+                "cwd": session.cwd or "",
+                "cols": session.cols,
+                "rows": session.rows,
+                "seq": terminal_sessions.latest_seq(session.sessionId),
+                "updatedAt": session.updatedAt,
+            },
+        )
+        print('terminal.session.opened', payload_model)
+        return
+
+    if event == "terminal.stdout.chunk":
+        try:
+            payload_model = TerminalStdoutChunkPayload.model_validate(payload)
+        except Exception:
+            return
+        chunk_payload = terminal_sessions.append_output_chunk(
+            session_id=payload_model.sessionId,
+            seq=payload_model.seq,
+            stream=payload_model.stream,
+            data=payload_model.data,
+            cwd=payload_model.cwd or "",
+            title=payload_model.title or "",
+            is_binary=payload_model.isBinary,
+        )
+        await manager.broadcast_terminal_event(
+            payload_model.sessionId,
+            "terminal.stdout.chunk",
+            chunk_payload,
+        )
+        return
+
+    if event == "terminal.session.state":
+        try:
+            payload_model = TerminalSessionStatePayload.model_validate(payload)
+        except Exception:
+            return
+        session = terminal_sessions.apply_state(
+            session_id=payload_model.sessionId,
+            status=payload_model.status,
+            title=payload_model.title,
+            cwd=payload_model.cwd or "",
+            cols=payload_model.cols,
+            rows=payload_model.rows,
+            seq=payload_model.seq,
+            updated_at=payload_model.updatedAt,
+        )
+        await manager.broadcast_terminal_event(
+            payload_model.sessionId,
+            "terminal.session.state",
+            {
+                "sessionId": session.sessionId,
+                "status": session.status,
+                "title": session.title,
+                "cwd": session.cwd or "",
+                "cols": session.cols,
+                "rows": session.rows,
+                "seq": payload_model.seq,
+                "updatedAt": session.updatedAt,
+            },
+        )
+        return
+
+    if event == "terminal.session.closed":
+        try:
+            payload_model = TerminalSessionClosedPayload.model_validate(payload)
+        except Exception:
+            return
+        session = terminal_sessions.mark_closed(
+            payload_model.sessionId,
+            exit_code=payload_model.exitCode,
+            reason=payload_model.reason,
+        )
+        await manager.broadcast_terminal_event(
+            payload_model.sessionId,
+            "terminal.session.closed",
+            {
+                "sessionId": session.sessionId,
+                "exitCode": session.exitCode,
+                "reason": session.closeReason,
+            },
+        )
+        return
+
+    if event == "terminal.session.error":
+        try:
+            payload_model = TerminalSessionErrorPayload.model_validate(payload)
+        except Exception:
+            return
+        session = terminal_sessions.mark_error(payload_model.sessionId, payload_model.message)
+        await manager.broadcast_terminal_event(
+            payload_model.sessionId,
+            "terminal.session.error",
+            {
+                "sessionId": session.sessionId,
+                "code": payload_model.code,
+                "message": payload_model.message,
+            },
+        )
+
+
+async def _handle_terminal_browser_message(websocket: WebSocket, raw: Any) -> None:
+    try:
+        req = RequestFrame.model_validate(raw)
+    except Exception:
+        await websocket.send_json(
+            ResponseFrame(
+                id=str(raw.get("id", "")) if isinstance(raw, dict) else "",
+                ok=False,
+                error={"code": "BAD_REQUEST", "message": "invalid terminal request"},
+            ).model_dump()
+        )
+        return
+
+    try:
+        if req.method == "terminal.session.attach":
+            params = TerminalSessionAttachParams.model_validate(req.params)
+            session = terminal_sessions.get_session(params.sessionId)
+            if session is None:
+                await websocket.send_json(
+                    ResponseFrame(
+                        id=req.id,
+                        ok=False,
+                        error={"code": "SESSION_NOT_FOUND", "message": "session not found"},
+                    ).model_dump()
+                )
+                return
+
+            manager.attach_terminal_client(params.sessionId, websocket)
+            replay = terminal_sessions.replay_after(params.sessionId, params.afterSeq)
+            snapshot = terminal_sessions.get_snapshot(params.sessionId)
+            if snapshot:
+                snapshot.connectedClients = manager.count_terminal_clients(params.sessionId)
+
+            await websocket.send_json(
+                ResponseFrame(
+                    id=req.id,
+                    ok=True,
+                    payload={
+                        "sessionId": params.sessionId,
+                        "status": session.status,
+                        "seq": snapshot.seq if snapshot else 0,
+                        "replayFrom": params.afterSeq + 1,
+                    },
+                ).model_dump()
+            )
+            if snapshot is not None:
+                await websocket.send_json(
+                    EventFrame(
+                        event="terminal.session.state",
+                        payload={
+                            "sessionId": session.sessionId,
+                            "status": session.status,
+                            "title": session.title,
+                            "cwd": session.cwd or "",
+                            "cols": session.cols,
+                            "rows": session.rows,
+                            "seq": snapshot.seq,
+                            "updatedAt": session.updatedAt,
+                        },
+                    ).model_dump()
+                )
+            for item in replay:
+                await websocket.send_json(
+                    EventFrame(event="terminal.stdout.chunk", payload=item).model_dump()
+                )
+            return
+
+        if req.method == "terminal.stdin.write":
+            params = TerminalStdinWritePayload.model_validate(req.params)
+            await _forward_terminal_event(params.sessionId, "terminal.stdin.write", params.model_dump())
+            await websocket.send_json(
+                ResponseFrame(id=req.id, ok=True, payload={"accepted": True}).model_dump()
+            )
+            return
+
+        if req.method == "terminal.session.resize":
+            params = TerminalSessionResizePayload.model_validate(req.params)
+            await _forward_terminal_event(
+                params.sessionId, "terminal.session.resize", params.model_dump()
+            )
+            await websocket.send_json(
+                ResponseFrame(id=req.id, ok=True, payload={"accepted": True}).model_dump()
+            )
+            return
+
+        if req.method == "terminal.session.signal":
+            params = TerminalSessionSignalPayload.model_validate(req.params)
+            await _forward_terminal_event(
+                params.sessionId, "terminal.session.signal", params.model_dump()
+            )
+            await websocket.send_json(
+                ResponseFrame(id=req.id, ok=True, payload={"accepted": True}).model_dump()
+            )
+            return
+
+        if req.method == "terminal.session.close":
+            params = TerminalSessionClosePayload.model_validate(req.params)
+            terminal_sessions.mark_closing(params.sessionId, params.reason)
+            await _forward_terminal_event(
+                params.sessionId, "terminal.session.close", params.model_dump()
+            )
+            await websocket.send_json(
+                ResponseFrame(id=req.id, ok=True, payload={"accepted": True}).model_dump()
+            )
+            return
+    except KeyError:
+        await websocket.send_json(
+            ResponseFrame(
+                id=req.id,
+                ok=False,
+                error={"code": "SESSION_NOT_FOUND", "message": "session not found"},
+            ).model_dump()
+        )
+        return
+    except ValueError as exc:
+        await websocket.send_json(
+            ResponseFrame(
+                id=req.id,
+                ok=False,
+                error={"code": "BAD_REQUEST", "message": str(exc)},
+            ).model_dump()
+        )
+        return
+
+    await websocket.send_json(
+        ResponseFrame(
+            id=req.id,
+            ok=False,
+            error={"code": "METHOD_NOT_SUPPORTED", "message": f"unsupported method: {req.method}"},
+        ).model_dump()
+    )
+
+
+async def _forward_terminal_event(session_id: str, event: str, payload: dict) -> None:
+    session = terminal_sessions.get_session(session_id)
+    if session is None:
+        raise KeyError(session_id)
+    if not manager.has_connection(session.deviceId):
+        raise ValueError("agent is offline")
+    await manager.send_event(session.deviceId, event, payload)

@@ -110,10 +110,6 @@ function applyCommand(command: string) {
   terminalRef.value?.fillInput(command)
 }
 
-function onCommandFinished() {
-  loadHistory()
-}
-
 onMounted(() => {
   loadAgent()
   loadHistory()
@@ -190,7 +186,6 @@ watch(
           :mem-used="agent?.memUsed ?? null"
           :mem-total="agent?.memTotal ?? null"
           banner="DevOps Control Plane · interactive shell · type any command and press ↵"
-          @command-finished="onCommandFinished"
         />
       </section>
     </main>

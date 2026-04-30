@@ -99,3 +99,55 @@ class UpdateAgentRemarkRequest(BaseModel):
 class UpdateAgentRemarkResponse(BaseModel):
     device_id: str
     remark: Optional[str] = None
+
+
+class CreateTerminalSessionRequest(BaseModel):
+    shell: str = Field(default="/bin/zsh", description="要启动的 shell 路径。")
+    cwd: str = Field(default="", description="session 初始工作目录。")
+    env: Optional[dict[str, str]] = Field(
+        default=None,
+        description="会话初始环境变量补丁。",
+    )
+    cols: int = Field(default=120, description="终端列数。")
+    rows: int = Field(default=32, description="终端行数。")
+    title: str = Field(default="", description="session 展示标题。")
+
+
+class TerminalSession(BaseModel):
+    sessionId: str
+    deviceId: str
+    status: str
+    title: str
+    shell: str
+    cwd: Optional[str] = None
+    envSummary: Optional[dict[str, str]] = None
+    cols: int
+    rows: int
+    createdAt: str
+    updatedAt: str
+    lastActiveAt: str
+    exitCode: Optional[int] = None
+    closeReason: Optional[str] = None
+
+
+class CreateTerminalSessionResponse(BaseModel):
+    session: TerminalSession
+
+
+class ListTerminalSessionsResponse(BaseModel):
+    items: List[TerminalSession] = Field(default_factory=list)
+
+
+class TerminalSessionSnapshot(BaseModel):
+    session: TerminalSession
+    capabilities: dict[str, bool]
+    seq: int
+    connectedClients: int = 0
+
+
+class UpdateTerminalSessionRequest(BaseModel):
+    title: str = Field(default="", description="更新后的会话标题。")
+
+
+class DeleteTerminalSessionResponse(BaseModel):
+    ok: bool
