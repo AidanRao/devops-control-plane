@@ -15,7 +15,7 @@ from ..services.commands import (
     get_command_status,
     list_commands_for_agent,
 )
-from ..services.agent_remarks import get_agent_remark, set_agent_remark
+from ..services.agent_registry import agent_registry
 from ..ws.manager import manager
 from ..schemas.ws import CommandPushPayload
 
@@ -60,21 +60,26 @@ async def get_command_status_endpoint(task_uuid: str) -> CommandStatusResponse:
 
 @router.get("/agents", response_model=AgentsResponse)
 async def list_agents() -> AgentsResponse:
-    """返回当前在线 Agent 列表。"""
+    """返回在线 + 已持久化离线 Agent 列表。"""
 
     agents = []
-    for device_id in manager.active_connections.keys():
+    persisted = {record.device_id: record for record in agent_registry.list_agents()}
+    all_device_ids = set(persisted.keys()) | set(manager.active_connections.keys())
+
+    for device_id in sorted(all_device_ids):
         metrics = manager.get_last_metrics(device_id)
+        record = persisted.get(device_id)
         agents.append(
             AgentInfo(
                 device_id=device_id,
+                online=device_id in manager.active_connections,
                 hasDeviceToken=manager.has_valid_token(device_id),
                 lastHeartbeat=manager.get_last_heartbeat(device_id),
                 cpuPercent=metrics.cpuPercent if metrics else None,
                 memPercent=metrics.memPercent if metrics else None,
                 memUsed=metrics.memUsed if metrics else None,
                 memTotal=metrics.memTotal if metrics else None,
-                remark=get_agent_remark(device_id),
+                remark=record.remark if record else None,
             )
         )
 
@@ -85,9 +90,9 @@ async def list_agents() -> AgentsResponse:
 async def update_agent_remark(
     device_id: str, body: UpdateAgentRemarkRequest
 ) -> UpdateAgentRemarkResponse:
-    """更新某个 Agent 的备注（持久化到本地 JSON 文件）。"""
+    """更新某个 Agent 的备注（持久化到 agent registry）。"""
 
-    saved = set_agent_remark(device_id, body.remark)
+    saved = agent_registry.set_remark(device_id, body.remark)
     return UpdateAgentRemarkResponse(device_id=device_id, remark=saved)
 
 

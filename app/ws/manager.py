@@ -1,10 +1,11 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from fastapi import WebSocket
 
 from ..schemas.ws import CommandPushPayload, MetricsSnapshot
+from ..services.agent_registry import agent_registry
 
 
 @dataclass
@@ -63,16 +64,31 @@ class ConnectionManager:
     def upsert_device_token(self, device_id: str, token: str, ttl_minutes: int) -> None:
         """为设备记录/刷新 deviceToken 及过期时间。"""
 
-        self.tokens[device_id] = DeviceTokenInfo(
-            token=token,
-            expires_at=datetime.utcnow() + timedelta(minutes=ttl_minutes),
-        )
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+        self.tokens[device_id] = DeviceTokenInfo(token=token, expires_at=expires_at)
+        agent_registry.upsert_device_token(device_id, token, expires_at)
 
     def _get_token_info(self, device_id: str) -> Optional[DeviceTokenInfo]:
         info = self.tokens.get(device_id)
         if not info:
-            return None
-        if info.expires_at < datetime.utcnow():
+            record = agent_registry.get_agent(device_id)
+            if record and record.device_token and record.token_expires_at:
+                expires_at = record.token_expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                else:
+                    expires_at = expires_at.astimezone(timezone.utc)
+                if expires_at >= datetime.now(timezone.utc):
+                    info = DeviceTokenInfo(
+                        token=record.device_token,
+                        expires_at=expires_at,
+                    )
+                    self.tokens[device_id] = info
+                else:
+                    return None
+            else:
+                return None
+        if info.expires_at < datetime.now(timezone.utc):
             # 过期即清理。
             self.tokens.pop(device_id, None)
             return None
@@ -96,7 +112,7 @@ class ConnectionManager:
         if meta is None:
             meta = DeviceMeta()
             self.meta[device_id] = meta
-        meta.last_heartbeat = datetime.utcnow()
+        meta.last_heartbeat = datetime.now(timezone.utc)
         if metrics is not None:
             meta.last_metrics = metrics
 

@@ -63,11 +63,12 @@ class AgentCommandHistoryResponse(BaseModel):
 
 
 class AgentInfo(BaseModel):
-    """在线 Agent 的最小视图。"""
+    """Agent 的最小视图（在线 + 已持久化离线）。"""
 
     device_id: str = Field(..., description="设备 ID（device_id）。")
+    online: bool = Field(..., description="当前是否在线。")
     hasDeviceToken: bool = Field(
-        ..., description="当前内存中是否存在有效的 deviceToken。"
+        ..., description="当前是否存在有效的 deviceToken（可来自持久化恢复）。"
     )
     lastHeartbeat: Optional[datetime] = Field(
         default=None,
@@ -83,7 +84,7 @@ class AgentInfo(BaseModel):
 class AgentsResponse(BaseModel):
     agents: List[AgentInfo] = Field(
         default_factory=list,
-        description="当前在线 Agent 列表。",
+        description="当前 Agent 列表（包含在线与已持久化离线设备）。",
     )
 
 

@@ -10,13 +10,14 @@ export type ParsedCd = {
   pending: PendingCd
 }
 
-export function useTerminalCwd(deviceId: Ref<string>) {
+export function useTerminalCwd(deviceId: Ref<string>, sessionId?: Ref<string>) {
   const cwd = ref<string>('')
   const persistedCwd = ref<string>('')
   const prevCwd = ref<string>('')
+  const sid = sessionId ?? computed(() => 'default')
 
   function storageKey() {
-    return `terminal-cwd:${deviceId.value}`
+    return `terminal-cwd:${deviceId.value}:${sid.value}`
   }
 
   function normalizeCwd(value: string) {
@@ -130,6 +131,19 @@ export function useTerminalCwd(deviceId: Ref<string>) {
     cwd.value = pending.to
   }
 
+  function promptDirNameFromPath(path?: string | null) {
+    const value = (path ?? '').trim()
+    if (!value) return '~'
+    if (value === '/' || value === '~') return value
+
+    const normalized = value.endsWith('/') && value.length > 1 ? value.slice(0, -1) : value
+    const lastSlash = normalized.lastIndexOf('/')
+    if (lastSlash === -1) return normalized
+    const base = normalized.slice(lastSlash + 1)
+    return base || (normalized.startsWith('/') ? '/' : '~')
+  }
+
+  const currentPromptDir = computed(() => promptDirNameFromPath(cwd.value))
   const isTempCwd = computed(() => Boolean(cwd.value) && cwd.value !== persistedCwd.value)
 
   function resetForDevice() {
@@ -141,13 +155,14 @@ export function useTerminalCwd(deviceId: Ref<string>) {
     cwd,
     persistedCwd,
     prevCwd,
+    currentPromptDir,
     isTempCwd,
     loadCwd,
     persistCwd,
     clearCwd,
     parseCdCommand,
     applyCdResult,
+    promptDirNameFromPath,
     resetForDevice,
   }
 }
-

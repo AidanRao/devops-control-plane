@@ -23,6 +23,7 @@ from ..schemas.ws import (
     ResultChunkPayload,
 )
 from ..services.commands import update_result
+from ..services.agent_registry import agent_registry
 from .manager import manager
 
 
@@ -160,6 +161,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.send_json(res.model_dump())
 
     # 握手完成，注册连接。
+    agent_registry.ensure_agent(device_id)
     await manager.register(device_id, websocket)
 
     # 后续消息循环：处理 agent.tick 与 result.chunk 等事件。

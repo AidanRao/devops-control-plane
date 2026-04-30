@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElDialog, ElIcon, ElInput, ElMessage, ElTooltip } from 'element-plus'
 import { ArrowLeft, CopyDocument, EditPen } from '@element-plus/icons-vue'
-import TerminalConsole from '@/components/TerminalConsole.vue'
+import TerminalSessions from '@/components/TerminalSessions.vue'
 import AgentDetailShelf from '@/components/agent-detail/AgentDetailShelf.vue'
 import {
   fetchAgentCommands,
@@ -19,7 +19,7 @@ const router = useRouter()
 const agent = ref<AgentInfo | null>(null)
 const history = ref<AgentCommandHistoryItem[]>([])
 const loadingHistory = ref(false)
-const terminalRef = ref<InstanceType<typeof TerminalConsole> | null>(null)
+const terminalRef = ref<InstanceType<typeof TerminalSessions> | null>(null)
 let historyTimer: number | undefined
 let agentTimer: number | undefined
 const POLL_INTERVAL_MS = 15_000
@@ -71,6 +71,7 @@ async function saveRemark() {
     if (!agent.value) {
       agent.value = {
         device_id: props.deviceId,
+        online: false,
         hasDeviceToken: false,
         lastHeartbeat: null,
         remark: next,
@@ -181,7 +182,7 @@ watch(
       />
 
       <section class="console">
-        <TerminalConsole
+        <TerminalSessions
           ref="terminalRef"
           :device-id="deviceId"
           :cpu-percent="agent?.cpuPercent ?? null"

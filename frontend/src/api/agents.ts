@@ -2,6 +2,7 @@ import http from './http'
 
 export interface AgentInfo {
   device_id: string
+  online: boolean
   hasDeviceToken: boolean
   lastHeartbeat?: string | null
   remark?: string | null

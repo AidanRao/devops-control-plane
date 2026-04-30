@@ -13,6 +13,12 @@ import { useTerminalHistory } from '@/composables/useTerminalHistory'
 
 const props = defineProps<{
   deviceId: string
+  /** 终端 session id，用于隔离 cwd 持久化等状态 */
+  sessionId?: string
+  /** 是否显示右侧 rail 区域 */
+  showRail?: boolean
+  /** 是否允许创建新终端 */
+  canCreateSession?: boolean
   /** 可选：初始提示横幅 */
   banner?: string
   /** 可选：agent 侧上报的实时指标（来自心跳聚合） */
@@ -24,6 +30,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'command-finished', payload: { taskUuid: string }): void
+  (e: 'create-session'): void
 }>()
 
 const input = ref('')
@@ -33,10 +40,18 @@ const inputEl = ref<HTMLInputElement | null>(null)
 const caretIndex = ref(0)
 const measureEl = ref<HTMLSpanElement | null>(null)
 const caretOffset = ref(0)
+const caretChar = computed(() => {
+  const ch = input.value.charAt(caretIndex.value)
+  if (!ch) return '\u00a0'
+  if (ch === ' ') return '\u00a0'
+  return ch
+})
 
 const deviceIdRef = computed(() => props.deviceId)
+const sessionIdRef = computed(() => props.sessionId ?? 'default')
 const {
   cwd,
+  currentPromptDir,
   isTempCwd,
   loadCwd,
   persistCwd,
@@ -44,7 +59,7 @@ const {
   parseCdCommand,
   applyCdResult,
   resetForDevice,
-} = useTerminalCwd(deviceIdRef)
+} = useTerminalCwd(deviceIdRef, sessionIdRef)
 const { record, handleArrowKeydown } = useTerminalHistory()
 
 function formatPercent(value?: number | null) {
@@ -132,6 +147,7 @@ async function submit() {
   await executeCommand({
     displayCommand: cmd,
     commandToSend,
+    promptDir: currentPromptDir.value,
     workDir: cwd.value ? cwd.value : undefined,
     pendingCd: cd?.pending ?? null,
     timeoutSeconds: 60,
@@ -168,6 +184,12 @@ function onKeydown(e: KeyboardEvent) {
     }
     e.preventDefault()
     submit()
+  }
+
+  // Keep custom caret in sync for navigation keys (holding left/right shouldn't "jump" on keyup).
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+    // Let the browser update selectionStart first, then measure.
+    requestAnimationFrame(updateCaretOffset)
   }
 }
 
@@ -265,73 +287,91 @@ defineExpose({
           <span class="metric-val">{{ formatPercent(memPercent) }}</span>
           <span class="metric-sub">{{ formatBytes(memUsed) }}/{{ formatBytes(memTotal) }}</span>
         </span>
+        <button
+          type="button"
+          class="chrome-action"
+          title="新建终端"
+          aria-label="新建终端"
+          :disabled="!props.canCreateSession"
+          @click.stop="emit('create-session')"
+        >
+          +
+        </button>
       </div>
     </div>
 
-    <div ref="bodyEl" class="terminal-body">
-      <template v-for="(line, i) in lines" :key="i">
-        <div v-if="line.kind === 'cmd'" class="line line--cmd">
-          <el-tooltip
-            v-if="line.exitCode !== undefined && line.exitCode !== null"
-            :content="`exit code: ${line.exitCode}`"
-            placement="top"
-          >
-            <span
-              class="cmd-status-dot"
-              :class="line.exitCode === 0 ? 'cmd-status-dot--success' : 'cmd-status-dot--error'"
+    <div class="terminal-content">
+      <div ref="bodyEl" class="terminal-body">
+        <template v-for="(line, i) in lines" :key="i">
+          <div v-if="line.kind === 'cmd'" class="line line--cmd">
+            <el-tooltip
+              v-if="line.exitCode !== undefined && line.exitCode !== null"
+              :content="`exit code: ${line.exitCode}`"
+              placement="top"
+            >
+              <span
+                class="cmd-status-dot"
+                :class="line.exitCode === 0 ? 'cmd-status-dot--success' : 'cmd-status-dot--error'"
+              />
+            </el-tooltip>
+            <span v-else class="cmd-status-dot cmd-status-dot--pending" />
+            <span class="prompt-dir">{{ line.promptDir || '~' }}</span>
+            <span class="prompt">$</span>
+            <span class="cmd-text">{{ line.text }}</span>
+          </div>
+          <div v-else-if="line.kind === 'stdout'" class="line line--stdout">{{ line.text }}</div>
+          <div v-else-if="line.kind === 'stderr'" class="line line--stderr">{{ line.text }}</div>
+          <div v-else-if="line.kind === 'hint'" class="line line--hint">{{ line.text }}</div>
+          <div v-else class="line line--meta">{{ line.text }}</div>
+        </template>
+
+        <!-- 下发中但尚未收到输出的临时指示行；收到第一条输出或终态即消失 -->
+        <div v-if="dispatching" class="line line--dispatching" aria-live="polite">
+          <span class="dispatch-spinner" aria-hidden="true">
+            <span class="spinner-dot" />
+            <span class="spinner-dot" />
+            <span class="spinner-dot" />
+          </span>
+          <span class="dispatch-text">dispatching</span>
+        </div>
+
+        <!-- 当前输入行（始终在最底部） -->
+        <div class="line line--input">
+          <span class="cmd-status-dot cmd-status-dot--pending" />
+          <span class="prompt-dir">{{ currentPromptDir }}</span>
+          <span class="prompt" :class="{ 'prompt--busy': running }">$</span>
+          <div class="input-wrap">
+            <input
+              ref="inputEl"
+              v-model="input"
+              type="text"
+              class="input"
+              spellcheck="false"
+              autocomplete="off"
+              autocapitalize="off"
+              :placeholder="running ? 'tailing output …  (Ctrl+C / Esc to stop)' : ''"
+              @keydown="onKeydown"
+              @input="onInputEvent"
+              @keyup="onInputSelectionChange"
+              @click="onInputSelectionChange"
+              @select="onInputSelectionChange"
+              @focus="onInputSelectionChange"
             />
-          </el-tooltip>
-          <span v-else class="cmd-status-dot cmd-status-dot--pending" />
-          <span class="prompt">$</span>
-          <span class="cmd-text">{{ line.text }}</span>
-        </div>
-        <div v-else-if="line.kind === 'stdout'" class="line line--stdout">{{ line.text }}</div>
-        <div v-else-if="line.kind === 'stderr'" class="line line--stderr">{{ line.text }}</div>
-        <div v-else-if="line.kind === 'hint'" class="line line--hint">{{ line.text }}</div>
-        <div v-else class="line line--meta">{{ line.text }}</div>
-      </template>
-
-      <!-- 下发中但尚未收到输出的临时指示行；收到第一条输出或终态即消失 -->
-      <div v-if="dispatching" class="line line--dispatching" aria-live="polite">
-        <span class="dispatch-spinner" aria-hidden="true">
-          <span class="spinner-dot" />
-          <span class="spinner-dot" />
-          <span class="spinner-dot" />
-        </span>
-        <span class="dispatch-text">dispatching</span>
-      </div>
-
-      <!-- 当前输入行（始终在最底部） -->
-      <div class="line line--input">
-        <span class="cmd-status-dot cmd-status-dot--pending" />
-        <span class="prompt" :class="{ 'prompt--busy': running }">$</span>
-        <div class="input-wrap">
-          <input
-            ref="inputEl"
-            v-model="input"
-            type="text"
-            class="input"
-            spellcheck="false"
-            autocomplete="off"
-            autocapitalize="off"
-            :placeholder="running ? 'tailing output …  (Ctrl+C / Esc to stop)' : ''"
-            @keydown="onKeydown"
-            @input="onInputEvent"
-            @keyup="onInputSelectionChange"
-            @click="onInputSelectionChange"
-            @select="onInputSelectionChange"
-            @focus="onInputSelectionChange"
-          />
-          <!-- 隐藏测量 span：与 input 完全同字体/字号，用于计算光标像素偏移 -->
-          <span ref="measureEl" class="input-measure" aria-hidden="true" />
-          <!-- 自定义方块光标，绝对定位，跟随输入位置移动 -->
-          <span
-            class="caret"
-            :class="{ 'caret--hidden': running }"
-            :style="{ transform: `translateX(${caretOffset}px)` }"
-          />
+            <!-- 隐藏测量 span：与 input 完全同字体/字号，用于计算光标像素偏移 -->
+            <span ref="measureEl" class="input-measure" aria-hidden="true" />
+            <!-- 自定义方块光标，绝对定位，跟随输入位置移动 -->
+            <span
+              class="caret"
+              :class="{ 'caret--hidden': running }"
+              :style="{ transform: `translateX(${caretOffset}px)` }"
+            >{{ caretChar }}</span>
+          </div>
         </div>
       </div>
+
+      <aside v-if="props.showRail && $slots.rail" class="terminal-rail" aria-label="Terminal sessions">
+        <slot name="rail" />
+      </aside>
     </div>
   </div>
 </template>
@@ -362,6 +402,12 @@ defineExpose({
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.terminal-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 /* 顶部"窗口栏" */
@@ -417,6 +463,38 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.chrome-action {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.35);
+  color: rgba(226, 232, 240, 0.95);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+.chrome-action:hover:not(:disabled) {
+  background: rgba(30, 41, 59, 0.72);
+  border-color: rgba(96, 165, 250, 0.32);
+}
+
+.chrome-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .cwd-pill {
@@ -495,6 +573,7 @@ defineExpose({
 /* 终端正文 */
 .terminal-body {
   flex: 1;
+  min-width: 0;
   padding: 14px 16px 18px;
   overflow-y: auto;
   font-size: 13px;
@@ -516,6 +595,16 @@ defineExpose({
   border-radius: 4px;
 }
 .terminal-body::-webkit-scrollbar-track { background: transparent; }
+
+.terminal-rail {
+  width: 116px;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 
 .line {
   white-space: pre-wrap;
@@ -558,6 +647,14 @@ defineExpose({
 .line--meta {
   color: var(--blue);
   opacity: 0.85;
+}
+
+.prompt-dir {
+  display: inline-block;
+  color: #93c5fd;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
 }
 
 .prompt {
@@ -656,19 +753,21 @@ defineExpose({
   position: absolute;
   left: 0;
   top: 50%;
-  margin-top: -8px;
-  width: 2px;
-  height: 16px;
-  background: var(--green);
+  margin-top: -0.72em;
+  width: 1ch;
+  height: 1.45em;
+  background: rgba(255, 255, 255, 0.96);
+  color: #020617;
   border-radius: 1px;
-  box-shadow: 0 0 8px rgba(74, 222, 128, 0.7);
-  animation: blink 1.05s steps(2, start) infinite;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   pointer-events: none;
   z-index: 2;
   transition: transform 60ms linear;
 }
 .caret--hidden { visibility: hidden; }
-@keyframes blink {
-  to { opacity: 0; }
-}
 </style>

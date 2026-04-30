@@ -8,11 +8,13 @@ export interface LogLine {
   kind: BlockKind
   text: string
   exitCode?: number | null
+  promptDir?: string
 }
 
 type SubmitPayload = {
   displayCommand: string
   commandToSend: string
+  promptDir?: string
   workDir?: string
   timeoutSeconds?: number
   pendingCd?: PendingCd | null
@@ -152,7 +154,11 @@ export function useCommandExecutor(options: UseCommandExecutorOptions) {
   async function submit(payload: SubmitPayload) {
     if (running.value) return
 
-    lines.value.push({ kind: 'cmd', text: payload.displayCommand })
+    lines.value.push({
+      kind: 'cmd',
+      text: payload.displayCommand,
+      promptDir: payload.promptDir,
+    })
     currentCommandLineIndex = lines.value.length - 1
     options.scrollToBottom()
 
@@ -225,4 +231,3 @@ export function useCommandExecutor(options: UseCommandExecutorOptions) {
     cleanup,
   }
 }
-
