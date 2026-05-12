@@ -185,7 +185,6 @@ watch(
           :mem-percent="agent?.memPercent ?? null"
           :mem-used="agent?.memUsed ?? null"
           :mem-total="agent?.memTotal ?? null"
-          banner="DevOps Control Plane · interactive shell · type any command and press ↵"
         />
       </section>
     </main>

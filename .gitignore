@@ -10,3 +10,4 @@ __pycache__/
 docs
 
 app/static/
+app/data/

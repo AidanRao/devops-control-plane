@@ -26,6 +26,7 @@ const sessions = ref<SessionMeta[]>([])
 const activeSessionId = ref<string>('default')
 const consoleRefs = ref<Record<string, InstanceType<typeof TerminalConsole> | null>>({})
 const showRail = computed(() => sessions.value.length > 1)
+const activeSession = computed(() => sessions.value.find(s => s.id === activeSessionId.value))
 const loadingSessions = ref(false)
 const creatingSession = ref(false)
 
@@ -80,7 +81,10 @@ function setConsoleRef(id: string, el: InstanceType<typeof TerminalConsole> | nu
 
 function focusActive() {
   nextTick(() => {
-    consoleRefs.value[activeSessionId.value]?.focus()
+    requestAnimationFrame(() => {
+      const consoleEl = consoleRefs.value[activeSessionId.value]
+      consoleEl?.focus()
+    })
   })
 }
 
@@ -171,12 +175,12 @@ watch(
 <template>
   <div class="terminal-sessions">
     <TerminalConsole
-      v-for="s in sessions"
-      :key="s.id"
-      :ref="(el) => setConsoleRef(s.id, el as any)"
-      v-show="s.id === activeSessionId"
+      v-if="activeSession"
+      :key="activeSession!.id"
+      :ref="(el) => setConsoleRef(activeSession!.id, el as any)"
       :device-id="deviceId"
-      :session-id="s.id"
+      :session-id="activeSession!.id"
+      :is-active="true"
       :show-rail="showRail"
       :can-create-session="sessions.length < MAX_SESSIONS && !loadingSessions && !creatingSession"
       :cpu-percent="cpuPercent"

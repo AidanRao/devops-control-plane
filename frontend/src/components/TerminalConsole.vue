@@ -36,7 +36,6 @@ const currentSessionId = computed(() => props.sessionId ?? 'default')
 const {
   connected,
   sessionStatus,
-  cwd,
   connect,
   sendInput,
   sendSignal,
@@ -189,18 +188,39 @@ function resetTerminalViewport() {
   writeSystemLine(`terminal session=${currentSessionId.value} · waiting for attach`)
 }
 
-async function syncResize(immediate = false) {
+async function syncResize(immediate = false, retryCount = 0) {
   if (!terminal || !fitAddon || !terminalHostEl.value) return
-  if (terminalHostEl.value.offsetWidth <= 0 || terminalHostEl.value.offsetHeight <= 0) return
+  
+  if (!connected.value) {
+    if (retryCount < 10) {
+      setTimeout(() => {
+        void syncResize(immediate, retryCount + 1)
+      }, 50 * (retryCount + 1))
+    }
+    return
+  }
+  
+  const currentWidth = terminalHostEl.value.offsetWidth
+  const currentHeight = terminalHostEl.value.offsetHeight
+  
+  if (currentWidth <= 0 || currentHeight <= 0) {
+    if (retryCount < 10) {
+      setTimeout(() => {
+        void syncResize(immediate, retryCount + 1)
+      }, 50 * (retryCount + 1))
+    }
+    return
+  }
+  
   const currentFitAddon = fitAddon
 
   const perform = async () => {
     currentFitAddon.fit()
+    
     if (terminal && terminal.cols > 0 && terminal.rows > 0) {
       try {
         await resize(terminal.cols, terminal.rows)
       } catch {
-        // ignore resize errors during attach/reconnect
       }
     }
   }
@@ -258,6 +278,19 @@ watch(
   },
 )
 
+watch(
+  connected,
+  (isConnected) => {
+    if (isConnected) {
+      nextTick(() => {
+        requestAnimationFrame(() => {
+          void syncResize(true)
+        })
+      })
+    }
+  }
+)
+
 onMounted(() => {
   createTerminal()
   window.addEventListener('keydown', onGlobalKeydown)
@@ -298,10 +331,6 @@ defineExpose({
         </span>
       </span>
       <div class="chrome-right">
-        <span class="cwd-pill" :class="{ 'cwd-pill--set': Boolean(cwd) }" title="当前工作目录">
-          <span class="cwd-key">cwd</span>
-          <span class="cwd-value">{{ cwd || '(default)' }}</span>
-        </span>
         <span class="metric-pill" title="CPU usage">
           <span class="metric-key">CPU</span>
           <span class="metric-val">{{ formatPercent(cpuPercent) }}</span>
@@ -465,39 +494,6 @@ defineExpose({
 .chrome-action:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-.cwd-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.35);
-  color: rgba(226, 232, 240, 0.9);
-  font-size: 11px;
-  line-height: 1.2;
-  min-width: 160px;
-}
-
-.cwd-pill--set {
-  border-color: rgba(96, 165, 250, 0.28);
-}
-
-.cwd-key {
-  color: rgba(148, 163, 184, 0.9);
-  letter-spacing: 1px;
-  flex: none;
-}
-
-.cwd-value {
-  width: 100%;
-  min-width: 0;
-  color: #e2e8f0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .metric-pill {

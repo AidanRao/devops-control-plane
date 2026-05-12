@@ -13,27 +13,30 @@ die() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  die "python3 not found. Please install Python 3.11+ and retry."
+if ! command -v conda >/dev/null 2>&1; then
+  die "conda not found. Please install Anaconda/Miniconda and retry."
 fi
 
 if [[ ! -f "requirements.txt" ]]; then
   die "requirements.txt not found in repo root."
 fi
 
-if [[ ! -d ".venv" ]]; then
-  log "Creating virtualenv at .venv ..."
-  python3 -m venv .venv
+CONDA_ENV_NAME="devops-control-plane"
+
+if ! conda env list | grep -q "^$CONDA_ENV_NAME\s"; then
+  log "Creating conda environment $CONDA_ENV_NAME with Python 3.11 ..."
+  conda create -n "$CONDA_ENV_NAME" python=3.11 -y
 else
-  log "Using existing virtualenv at .venv"
+  log "Using existing conda environment $CONDA_ENV_NAME"
 fi
 
-# shellcheck disable=SC1091
-source ".venv/bin/activate"
+log "Activating conda environment $CONDA_ENV_NAME ..."
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "$CONDA_ENV_NAME"
 
 log "Installing dependencies ..."
-python3 -m pip install --upgrade pip >/dev/null
-python3 -m pip install -r requirements.txt
+python -m pip install --upgrade pip >/dev/null
+python -m pip install -r requirements.txt
 
 if [[ ! -f ".env" ]]; then
   if [[ -f ".env.example" ]]; then
@@ -44,17 +47,14 @@ if [[ ! -f ".env" ]]; then
   fi
 fi
 
-# Load env vars (PORT, tokens, etc.) into current process.
 if [[ -f ".env" ]]; then
   set -a
-  # shellcheck disable=SC1091
   source ".env"
   set +a
 fi
 
 PORT="${PORT:-8000}"
 
-# 构建前端（Vue 项目），产物输出到 app/static/
 if [[ -d "frontend" ]]; then
   if command -v npm >/dev/null 2>&1; then
     pushd frontend >/dev/null
@@ -71,4 +71,4 @@ if [[ -d "frontend" ]]; then
 fi
 
 log "Starting server on http://127.0.0.1:${PORT}/ui"
-exec python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port "${PORT}"
+exec python -m uvicorn app.main:app --reload --host 0.0.0.0 --port "${PORT}"
